@@ -1,0 +1,80 @@
+Mantep met! Gem Sinar Pagi Web Builder udah jadi! 🔥
+
+Sekarang mulai dari mana? Nih roadmap lengkap dari nol sampe jadi sinarpagi.my.id:
+
+ROADMAP - SINAR-PAGI-WEB (Repo Baru)
+
+PHASE 0: SETUP DASAR (Hari 1 - 30 menit)
+[ ] Bikin repo baru sinar-pagi-web di GitHub (private dulu)
+[ ] npm create vite@latest sinar-pagi-web -- --template vue
+[ ] Install: npm i vue-router pinia dexie firebase lucide-vue-next @vueuse/head
+[ ] Install Tailwind: npm i -D tailwindcss postcss autoprefixer + npx tailwindcss init
+[ ] Copy .env real (yang ada AIzaSyANMRV4l-Ms4oYY2daDErYJlZR6RJChKmo + vezqidog + 6289516477760 + sinarpagi.my.id) ke root repo baru
+[ ] Copy .env.example versi aman ke repo (buat dokumentasi)
+[ ] Setup src/services/firebase.js (connect ke sinarpagi-db project yang sama)
+
+PHASE 1: SHARED DATA & OFFLINE CORE (Hari 1-2)
+[ ] Bikin src/db/index.js v1 (Dexie): products, cart, pendingCheckouts
+[ ] Bikin src/services/productService.js + src/db/repositories/productRepository.js (get where isPublished==true)
+[ ] Bikin src/services/cloudinaryService.js (getThumb w_300, getFull w_800, uploadBuktiBayar)
+[ ] Bikin src/services/qrisService.js (getQrisSettings dari settings/qris)
+[ ] Test: pull 498 produk dari Firestore sinarpagi-db → simpen IndexedDB → tampil di console log
+
+PHASE 2: KATALOG + UI ELEGANT (Hari 2-3) - Pake Gem lu!
+[ ] Bikin src/stores/productStore.js + src/stores/cartStore.js
+[ ] Bikin components UI base (wajib lucide + modal elegant no select):
+components/ui/Modal.vue (base elegant rounded- + backdrop-blur + X icon)[2rem]
+components/ui/Button.vue
+[ ] Bikin views/Catalog.vue:
+SearchBar (Search icon)
+CategoryFilterModal (Tag + ChevronDown, modal elegant, no select)
+ProductGrid + ProductCard (Package, Plus, AlertTriangle, ShoppingCart icons)
+[ ] Bikin views/ProductDetail.vue (ArrowLeft, Plus, Minus, ShoppingBag)
+[ ] Test offline-first: buka katalog → matiin internet → refresh → masih nongol 498 produk + gambar dari cache
+
+PHASE 3: KERANJANG + CHECKOUT WA (Hari 3-4)
+[ ] Bikin views/Cart.vue:
+CartItem + QtyStepper (Plus, Minus buttons, no select, Trash2)
+CartSummary + total
+[ ] Bikin views/Checkout.vue:
+CustomerForm (User, MapPin)
+PaymentSelectorModal (Banknote COD, QrCode QRIS, CreditCard Transfer) - modal elegant
+QrisDisplay (baca qrisUrl dari Firestore, ShieldCheck "Pastikan: SINAR PAGI")
+BuktiUploader (Upload, CheckCircle, compress 800px)
+[ ] Bikin services/waService.js (generate WA message format + open wa.me/6289516477760)
+[ ] Bikin views/CheckoutSuccess.vue (CheckCircle + Home)
+[ ] Test flow: tambah keranjang offline → checkout QRIS → upload bukti → WA ke 6289516477760
+
+PHASE 4: PWA + SEO Opsi A (Hari 4-5)
+[ ] Setup vite-plugin-pwa:
+Workbox runtimeCaching Cloudinary vezqidog CacheFirst 500 entries 30 days
+manifest.json (name Sinar Pagi, theme_color, icons)
+[ ] SEO Opsi A:
+@vueuse/head dynamic title/meta per produk
+Generate sitemap.xml 498 produk
+robots.txt
+vite-plugin-prerender 10 produk terlaris
+[ ] Test PWA: install di HP, buka offline, cek instant 0.2s
+
+PHASE 5: SECURITY & POLISH (Hari 5)
+[ ] Di app kasir lama: tambah menu Upload QRIS Toko di Settings.vue (upload ke Cloudinary qris/ + simpan ke settings/qris, admin only PIN)
+[ ] Di web baru: pastikan QRIS ga hardcode, baca dari settings/qris, tampil merchantName
+[ ] Watermark QRIS, disable save, test anti jail
+
+PHASE 6: DEPLOY + DOMAIN (Hari 6)
+[ ] Build: npm run build
+[ ] Deploy ke Vercel / Netlify / Firebase Hosting (connect GitHub sinar-pagi-web)
+[ ] Beli domain sinarpagi.my.id (di Niagahoster / DomaiNesia)
+[ ] Set DNS + VITE_APP_URL=https://sinarpagi.my.id
+[ ] Test live: sinarpagi.my.id → katalog 498 produk + gambar vezqidog + cart + WA
+
+PHASE 7: GROWTH (Nanti)
+QRIS Dinamis Midtrans, Promo banner, Wishlist, Login optional, Nuxt SSR
+
+---
+
+Mulai dari mana sekarang met?
+
+Saran gua: Mulai PHASE 0 dulu! Bikin repo baru sinar-pagi-web + install dependencies + copy .env real.
+
+Udah bikin repo nya belum met? Kalo udah, kirim screenshot / link GitHub nya, nanti gua bantu setup firebase.js + productService.js pertama pake Gem gratisan lu!
