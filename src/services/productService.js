@@ -1,14 +1,21 @@
 import { collection, getDocs, query, where } from 'firebase/firestore'
 import { db as firestoreDb } from './firebase.js'
 import { productRepo } from '../db/repositories/productRepository.js'
+import { db } from '../db/index.js'
+
+const getServiceIds = (s) => {
+  if (s.productIds && Array.isArray(s.productIds)) return s.productIds
+  if (s.productId) return [s.productId]
+  return []
+}
 
 export const productService = {
   async syncPublishedProducts() {
     try {
       if (!navigator.onLine) {
-        console.log('[ProductService] Offline, pake IndexedDB')
         return await productRepo.getPublished()
       }
+
       const q = query(collection(firestoreDb, 'products'), where('isPublished', '==', true))
       const snapshot = await getDocs(q)
       const remoteProducts = []
@@ -19,22 +26,61 @@ export const productService = {
           id: doc.id,
           name: data.name || '',
           category: data.category || 'UMUM',
+          unit: data.unit || 'PCS',
           price_sell: Number(data.price_sell) || 0,
+          price_modal: Number(data.price_modal) || 0,
+          packPrice: Number(data.packPrice) || 0,
+          packQty: Number(data.packQty) || 0,
+          purchasePackName: data.purchasePackName || '',
           qty: Number(data.qty) || 0,
+          minStock: Number(data.minStock) || 2,
           isPublished: data.isPublished ? 1 : 0,
           imageUrl: data.imageUrl || null,
           imagePublicId: data.imagePublicId || null,
           updatedAt: data.updatedAt || new Date().toISOString(),
-          deleted: 0
+          deleted: 0,
+          synced: 1
         })
       })
       if (remoteProducts.length > 0) await productRepo.bulkSave(remoteProducts)
+
+      // 2. Sync product_packages
+      try {
+        const pkgSnap = await getDocs(collection(firestoreDb, 'product_packages'))
+        const remotePkgs = pkgSnap.docs.map(d => {
+          const data = d.data()
+          return { ...data, id: d.id, synced: 1, deleted: data.deleted ? 1 : 0 }
+        })
+        if (remotePkgs.length) await db.product_packages.bulkPut(remotePkgs)
+      } catch (e) {
+        console.warn('[ProductService] Gagal sync product_packages', e)
+      }
+
+      // 3. Sync services - FIX MULTI PRODUK
+      try {
+        const svcSnap = await getDocs(collection(firestoreDb, 'services'))
+        const remoteSvcs = svcSnap.docs.map(d => {
+          const data = d.data()
+          // normalisasi biar support lama & baru
+          const ids = getServiceIds(data)
+          return {
+            ...data,
+            id: d.id,
+            productId: data.productId || null,
+            productIds: ids,
+            category: (data.category || 'UMUM').toUpperCase(),
+            synced: 1,
+            deleted: data.deleted ? 1 : 0
+          }
+        })
+        if (remoteSvcs.length) await db.services.bulkPut(remoteSvcs)
+        console.log(`[ProductService] Synced ${remoteSvcs.length} services with multi-product support`)
+      } catch (e) {
+        console.warn('[ProductService] Gagal sync services', e)
+      }
+
       return await productRepo.getPublished()
     } catch (error) {
-      if (error.name === 'AbortError' || error.message?.includes('AbortError')) {
-        console.warn('[ProductService] AbortError ignored (Vite HMR)')
-        return await productRepo.getPublished()
-      }
       console.error('[ProductService] Error:', error)
       return await productRepo.getPublished()
     }

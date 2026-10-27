@@ -1,0 +1,35 @@
+src
+├── App.vue
+├── assets
+├── components
+│   └── ui
+│       ├── Button.vue
+│       └── Modal.vue
+├── db
+│   ├── index.js
+│   └── repositories
+│       ├── cartRepository.js
+│       └── productRepository.js
+├── main.js
+├── router
+│   └── index.js
+├── services
+│   ├── cloudinaryService.js
+│   ├── firebase.js
+│   ├── productService.js
+│   ├── qrisService.js
+│   └── waService.js
+├── stores
+│   ├── cartStore.js
+│   └── productStore.js
+├── style.css
+├── utils
+│   ├── formatters.js
+│   └── productHelper.js
+└── views
+    ├── Cart.vue
+    ├── Catalog.vue
+    ├── Checkout.vue
+    └── CheckoutSuccess.vue
+
+11 directories, 22 files
