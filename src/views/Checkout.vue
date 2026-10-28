@@ -1,27 +1,33 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCartStore } from '../stores/cartStore'
 import { qrisService } from '../services/qrisService'
 import { waService } from '../services/waService'
-import { compressImage, uploadToCloudinary } from '../services/cloudinaryService'
+import { compressImage, uploadBuktiBayar } from '../services/cloudinaryService'
 import { formatRupiah } from '../utils/formatters'
-import Modal from '../components/ui/Modal.vue'
-import { ArrowLeft, User, MapPin, QrCode, Banknote, ShieldCheck, Upload, CheckCircle, Loader2 } from 'lucide-vue-next'
+import { ArrowLeft, User, MapPin, QrCode, Banknote, ShieldCheck, Upload, CheckCircle, Loader2, Store, Bike, Download, Maximize2, X, StickyNote } from 'lucide-vue-next'
 
 const router = useRouter()
 const cartStore = useCartStore()
 
 const customerName = ref('')
-const customerAddress = ref('')
+const customerAddress = ref('') // Alamat / Patokan WAJIB
+const customerNotes = ref('') // Catatan / Notes OPSIONAL
 const paymentMethod = ref('COD')
+const deliveryType = ref('pickup') // pickup | delivery
 
-const isPaymentModalOpen = ref(false)
+const isQrisFullscreen = ref(false)
 const qrisSettings = ref({ qrisUrl: '', merchantName: 'WARUNG SINAR PAGI', nmid: '' })
 const buktiFile = ref(null)
 const buktiUrl = ref('')
 const uploading = ref(false)
 const loadingCheckout = ref(false)
+
+const DELIVERY_FEE = 2000
+
+const deliveryFee = computed(() => deliveryType.value === 'delivery' ? DELIVERY_FEE : 0)
+const finalTotal = computed(() => cartStore.totalPrice + deliveryFee.value)
 
 onMounted(async () => {
   await cartStore.loadCart()
@@ -35,7 +41,8 @@ async function handleFileChange(event) {
   uploading.value = true
   try {
     const compressedBlob = await compressImage(file)
-    const res = await uploadToCloudinary(compressedBlob, 'sinar-pagi/bukti-bayar')
+    // INI KUNCINYA MET -> OTOMATIS MASUK FOLDER sinar-pagi/bukti-bayar
+    const res = await uploadBuktiBayar(compressedBlob)
     buktiUrl.value = res.secure_url
     buktiFile.value = file.name
   } catch (err) {
@@ -46,9 +53,31 @@ async function handleFileChange(event) {
   }
 }
 
+async function downloadQris() {
+  if (!qrisSettings.value.qrisUrl) return
+  try {
+    const res = await fetch(qrisSettings.value.qrisUrl)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `QRIS-${qrisSettings.value.merchantName || 'SinarPagi'}.jpg`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch {
+    window.open(qrisSettings.value.qrisUrl, '_blank')
+  }
+}
+
 async function handleCheckout() {
-  if (!customerName.value.trim() || !customerAddress.value.trim()) {
-    alert('Mohon isi Nama dan Alamat/Catatan pengiriman terlebih dahulu!')
+  if (!customerName.value.trim()) {
+    alert('Mohon isi Nama Lengkap terlebih dahulu!')
+    return
+  }
+  if (!customerAddress.value.trim()) {
+    alert('Mohon isi Alamat / Patokan terlebih dahulu!')
     return
   }
   if (paymentMethod.value === 'QRIS' && !buktiUrl.value) {
@@ -59,9 +88,15 @@ async function handleCheckout() {
   loadingCheckout.value = true
 
   waService.sendOrderToWhatsApp(
-    { name: customerName.value, address: customerAddress.value },
+    { 
+      name: customerName.value, 
+      address: customerAddress.value,
+      notes: customerNotes.value,
+      deliveryType: deliveryType.value,
+      deliveryFee: deliveryFee.value
+    },
     cartStore.items,
-    cartStore.totalPrice,
+    finalTotal.value,
     paymentMethod.value,
     buktiUrl.value
   )
@@ -85,12 +120,39 @@ async function handleCheckout() {
     </header>
 
     <main class="max-w-4xl mx-auto p-4 flex flex-col gap-4">
+      <!-- OPSI PENGAMBILAN -->
+      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-3">
+        <h2 class="font-bold text-gray-800 text-base">Opsi Pengambilan</h2>
+        <div class="grid grid-cols-2 gap-2">
+          <button 
+            @click="deliveryType = 'pickup'"
+            :class="['p-3.5 rounded-xl border flex flex-col items-start gap-1.5 transition text-left', deliveryType === 'pickup' ? 'border-zinc-900 bg-zinc-900 text-white shadow-md' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
+          >
+            <Store :size="20" :class="deliveryType === 'pickup' ? 'text-white' : 'text-zinc-900'" />
+            <div>
+              <p class="text-xs font-black uppercase">Ambil di Warung</p>
+              <p :class="['text-[11px]', deliveryType === 'pickup' ? 'text-zinc-300' : 'text-zinc-500']">Gratis • Tanpa ongkir</p>
+            </div>
+          </button>
+          <button 
+            @click="deliveryType = 'delivery'"
+            :class="['p-3.5 rounded-xl border flex flex-col items-start gap-1.5 transition text-left', deliveryType === 'delivery' ? 'border-amber-600 bg-amber-50 text-amber-900 shadow-md' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
+          >
+            <Bike :size="20" :class="deliveryType === 'delivery' ? 'text-amber-600' : 'text-zinc-900'" />
+            <div>
+              <p class="text-xs font-black uppercase">Diantar</p>
+              <p :class="['text-[11px] font-bold', deliveryType === 'delivery' ? 'text-amber-700' : 'text-zinc-500']">+ {{ formatRupiah(DELIVERY_FEE) }}</p>
+            </div>
+          </button>
+        </div>
+      </div>
+
       <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-4">
-        <h2 class="font-bold text-gray-800 text-base">Informasi Pengiriman / Pemesan</h2>
+        <h2 class="font-bold text-gray-800 text-base">Informasi Pemesanan</h2>
         
         <div class="flex flex-col gap-1.5">
           <label class="text-xs font-semibold text-gray-600 flex items-center gap-1">
-            <User :size="14" class="text-blue-600" /> Nama Lengkap / Panggilan
+            <User :size="14" class="text-blue-600" /> Nama Lengkap *
           </label>
           <input
             v-model="customerName"
@@ -102,67 +164,101 @@ async function handleCheckout() {
 
         <div class="flex flex-col gap-1.5">
           <label class="text-xs font-semibold text-gray-600 flex items-center gap-1">
-            <MapPin :size="14" class="text-blue-600" /> Alamat / Patokan / Catatan
+            <MapPin :size="14" class="text-blue-600" /> Alamat / Patokan *
           </label>
           <textarea
             v-model="customerAddress"
             rows="3"
-            placeholder="Contoh: RT 02/05 dekat warung / ambil langsung"
+            placeholder="Contoh: RT 02/05 Jl. Sinar Pagi No 10, patokan warung sebelah"
             class="w-full px-4 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 outline-none resize-none"
           ></textarea>
         </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-xs font-semibold text-gray-600 flex items-center gap-1">
+            <StickyNote :size="14" class="text-blue-600" /> Catatan / Notes <span class="font-normal text-gray-400">(Opsional)</span>
+          </label>
+          <textarea
+            v-model="customerNotes"
+            rows="3"
+            placeholder="Contoh: es batu jangan terlalu banyak, saos dikit aja, mie setengah mateng dll"
+            class="w-full px-4 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 outline-none resize-none"
+          ></textarea>
+          <p class="text-[10px] text-zinc-400">Contoh: es batu jangan terlalu banyak, saos dikit aja, dll</p>
+        </div>
       </div>
 
-      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-4">
-        <div class="flex items-center justify-between">
-          <h2 class="font-bold text-gray-800 text-base">Metode Pembayaran</h2>
-          <button @click="isPaymentModalOpen = true" class="text-xs font-bold text-blue-600 hover:underline">
-            Ubah Metode
+      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-3">
+        <h2 class="font-bold text-gray-800 text-base">Metode Pembayaran</h2>
+
+        <!-- INI YANG DIRUBAH MET -> ATAS BAWAH BUKAN GRID 2 -->
+        <div class="flex flex-col gap-2">
+          <button 
+            @click="paymentMethod = 'COD'"
+            :class="['p-3.5 rounded-xl border flex items-center justify-between gap-3 transition text-left', paymentMethod === 'COD' ? 'border-blue-600 bg-blue-50 text-blue-900 shadow-sm' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
+          >
+            <div class="flex items-center gap-3">
+              <div :class="['p-2 rounded-xl', paymentMethod === 'COD' ? 'bg-blue-600 text-white' : 'bg-zinc-100 text-zinc-600']">
+                <Banknote :size="20" />
+              </div>
+              <div>
+                <p class="text-xs font-black">Bayar di Tempat (COD)</p>
+                <p class="text-[11px] text-zinc-500 leading-tight">Bayar tunai saat diterima/diambil</p>
+              </div>
+            </div>
+            <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0', paymentMethod === 'COD' ? 'border-blue-600 bg-blue-600' : 'border-zinc-300']">
+              <div v-if="paymentMethod === 'COD'" class="w-2 h-2 bg-white rounded-full"></div>
+            </div>
+          </button>
+          <button 
+            @click="paymentMethod = 'QRIS'"
+            :class="['p-3.5 rounded-xl border flex items-center justify-between gap-3 transition text-left', paymentMethod === 'QRIS' ? 'border-emerald-600 bg-emerald-50 text-emerald-900 shadow-sm' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
+          >
+            <div class="flex items-center gap-3">
+              <div :class="['p-2 rounded-xl', paymentMethod === 'QRIS' ? 'bg-emerald-600 text-white' : 'bg-zinc-100 text-zinc-600']">
+                <QrCode :size="20" />
+              </div>
+              <div>
+                <p class="text-xs font-black">QRIS</p>
+                <p class="text-[11px] text-zinc-500 leading-tight">Scan e-wallet / m-banking</p>
+              </div>
+            </div>
+            <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0', paymentMethod === 'QRIS' ? 'border-emerald-600 bg-emerald-600' : 'border-zinc-300']">
+              <div v-if="paymentMethod === 'QRIS'" class="w-2 h-2 bg-white rounded-full"></div>
+            </div>
           </button>
         </div>
 
-        <div @click="isPaymentModalOpen = true" class="flex items-center justify-between p-3.5 bg-blue-50 border border-blue-100 rounded-xl cursor-pointer hover:bg-blue-100/50 transition">
-          <div class="flex items-center gap-3">
-            <div class="p-2 bg-blue-600 text-white rounded-xl">
-              <Banknote v-if="paymentMethod === 'COD'" :size="20" />
-              <QrCode v-else :size="20" />
-            </div>
-            <div>
-              <p class="font-bold text-gray-800 text-sm">
-                {{ paymentMethod === 'COD' ? 'Bayar di Tempat (COD)' : 'QRIS Instant' }}
-              </p>
-              <p class="text-xs text-gray-500">
-                {{ paymentMethod === 'COD' ? 'Bayar tunai saat barang diterima' : 'Scan QRIS nasional via e-wallet / m-banking' }}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="paymentMethod === 'QRIS'" class="flex flex-col gap-4 mt-2 pt-4 border-t border-gray-100">
+        <div v-if="paymentMethod === 'QRIS'" class="flex flex-col gap-4 mt-1 pt-4 border-t border-dashed border-gray-200">
           <div class="bg-gray-50 p-4 rounded-2xl border border-gray-200 flex flex-col items-center text-center gap-3">
             <div class="flex items-center gap-1.5 text-emerald-700 text-xs font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
               <ShieldCheck :size="14" /> Pastikan: {{ qrisSettings.merchantName }}
             </div>
             
-            <div class="w-48 h-48 bg-white rounded-xl p-2 shadow-xs border border-gray-200 flex items-center justify-center overflow-hidden">
-              <img v-if="qrisSettings.qrisUrl" :src="qrisSettings.qrisUrl" alt="QRIS Warung Sinar Pagi" class="w-full h-full object-contain" />
-              <p v-else class="text-xs text-gray-400">QRIS belum diset oleh admin</p>
+            <div @click="isQrisFullscreen = true" class="relative w-full max-w-[320px] bg-white rounded-2xl p-3 shadow-sm border border-gray-200 flex items-center justify-center cursor-zoom-in group overflow-hidden">
+              <img v-if="qrisSettings.qrisUrl" :src="qrisSettings.qrisUrl" alt="QRIS" class="w-full h-auto object-contain rounded-xl" />
+              <p v-else class="text-xs text-gray-400 py-10">QRIS belum diset oleh admin</p>
+              <div class="absolute top-2.5 right-2.5 p-1.5 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 transition">
+                <Maximize2 :size="16" />
+              </div>
             </div>
+            
+            <p class="text-xs text-gray-500">Tap gambar untuk fullscreen • Scan dengan BCA, BRI, Dana, OVO, GoPay, dll.</p>
 
-            <p class="text-xs text-gray-500">Scan QR dengan BCA, BRI, Dana, OVO, GoPay, dll.</p>
+            <button @click="downloadQris" class="w-full max-w-[320px] flex items-center justify-center gap-2 px-4 py-3 bg-zinc-900 text-white rounded-xl text-xs font-black active:scale-95 transition shadow-md hover:bg-black">
+              <Download :size="16" /> Download QRIS (Buat Bayar 1 HP)
+            </button>
+            <p class="text-[10px] text-zinc-400 max-w-[320px] leading-tight">Kalo cuma punya 1 HP: Download dulu, baru buka e-wallet > Bayar > Pilih dari Galeri / Upload QRIS</p>
           </div>
-
           <div class="flex flex-col gap-2">
-            <label class="text-xs font-semibold text-gray-600">Upload Bukti Pembayaran QRIS</label>
-            <div class="flex items-center gap-3">
-              <label class="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl cursor-pointer text-sm font-medium transition border border-dashed border-gray-300">
-                <Upload :size="16" class="text-blue-600" />
-                <span>{{ buktiFile ? 'Ganti Bukti Bayar' : 'Pilih Foto Bukti Bayar' }}</span>
-                <input type="file" accept="image/*" @change="handleFileChange" class="hidden" />
-              </label>
-            </div>
+            <label class="text-xs font-semibold text-gray-600">Upload Bukti Pembayaran QRIS *</label>
+            <label class="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl cursor-pointer text-sm font-medium transition border border-dashed border-gray-300">
+              <Upload :size="16" class="text-blue-600" />
+              <span>{{ buktiFile ? 'Ganti Bukti Bayar' : 'Pilih Foto Bukti Bayar' }}</span>
+              <input type="file" accept="image/*" @change="handleFileChange" class="hidden" />
+            </label>
             <div v-if="uploading" class="flex items-center gap-2 text-xs text-blue-600 font-medium">
-              <Loader2 :size="14" class="animate-spin" /> Mengompres & mengunggah gambar...
+              <Loader2 :size="14" class="animate-spin" /> Mengompres & mengunggah...
             </div>
             <div v-if="buktiUrl" class="flex items-center gap-2 text-xs text-emerald-600 font-medium bg-emerald-50 p-2.5 rounded-xl border border-emerald-100">
               <CheckCircle :size="16" /> Bukti bayar berhasil diunggah!
@@ -170,13 +266,24 @@ async function handleCheckout() {
           </div>
         </div>
       </div>
+
+      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 space-y-2">
+        <h2 class="font-bold text-gray-800 text-sm mb-1">Rincian Biaya</h2>
+        <div class="flex justify-between text-xs text-zinc-600"><span>Subtotal ({{ cartStore.totalItems }} item)</span><span>{{ formatRupiah(cartStore.totalPrice) }}</span></div>
+        <div class="flex justify-between text-xs" :class="deliveryFee > 0 ? 'text-amber-600 font-bold' : 'text-zinc-400'">
+          <span>Ongkir ({{ deliveryType === 'delivery' ? 'Diantar' : 'Ambil di Warung' }})</span>
+          <span>{{ deliveryFee > 0 ? formatRupiah(deliveryFee) : 'Gratis' }}</span>
+        </div>
+        <div class="border-t border-dashed pt-2 flex justify-between font-black text-sm"><span>Total Tagihan</span><span class="text-blue-600">{{ formatRupiah(finalTotal) }}</span></div>
+      </div>
     </main>
 
     <footer class="fixed bottom-0 inset-x-0 bg-white border-t border-gray-100 p-4 shadow-lg z-30">
       <div class="max-w-4xl mx-auto flex items-center justify-between gap-4">
         <div>
           <p class="text-xs text-gray-500">Total Tagihan</p>
-          <p class="text-lg font-extrabold text-blue-600">{{ formatRupiah(cartStore.totalPrice) }}</p>
+          <p class="text-lg font-extrabold text-blue-600">{{ formatRupiah(finalTotal) }}</p>
+          <p v-if="deliveryFee > 0" class="text-[10px] text-amber-600 font-bold">Termasuk ongkir {{ formatRupiah(deliveryFee) }}</p>
         </div>
         <button
           @click="handleCheckout"
@@ -189,38 +296,10 @@ async function handleCheckout() {
       </div>
     </footer>
 
-    <Modal :isOpen="isPaymentModalOpen" title="Pilih Metode Pembayaran" @close="isPaymentModalOpen = false">
-      <div class="flex flex-col gap-2 py-2">
-        <button
-          @click="paymentMethod = 'COD'; isPaymentModalOpen = false"
-          class="flex items-center justify-between p-4 rounded-xl border transition text-left"
-          :class="paymentMethod === 'COD' ? 'bg-blue-50 border-blue-200 text-blue-700 font-bold' : 'hover:bg-gray-50 border-gray-100 text-gray-800'"
-        >
-          <div class="flex items-center gap-3">
-            <Banknote :size="20" class="text-blue-600" />
-            <div>
-              <p class="text-sm font-bold">Bayar di Tempat (COD)</p>
-              <p class="text-xs text-gray-500 font-normal">Bayar tunai langsung saat barang diterima</p>
-            </div>
-          </div>
-          <span v-if="paymentMethod === 'COD'" class="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
-        </button>
-
-        <button
-          @click="paymentMethod = 'QRIS'; isPaymentModalOpen = false"
-          class="flex items-center justify-between p-4 rounded-xl border transition text-left"
-          :class="paymentMethod === 'QRIS' ? 'bg-blue-50 border-blue-200 text-blue-700 font-bold' : 'hover:bg-gray-50 border-gray-100 text-gray-800'"
-        >
-          <div class="flex items-center gap-3">
-            <QrCode :size="20" class="text-blue-600" />
-            <div>
-              <p class="text-sm font-bold">QRIS Instant</p>
-              <p class="text-xs text-gray-500 font-normal">Scan QRIS nasional via e-wallet / m-banking</p>
-            </div>
-          </div>
-          <span v-if="paymentMethod === 'QRIS'" class="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
-        </button>
-      </div>
-    </Modal>
+    <div v-if="isQrisFullscreen" @click="isQrisFullscreen = false" class="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-4">
+      <button @click="isQrisFullscreen = false" class="absolute top-4 right-4 p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition"><X :size="24" /></button>
+      <img :src="qrisSettings.qrisUrl" class="max-w-full max-h-[80vh] object-contain rounded-2xl bg-white p-2 shadow-2xl" @click.stop />
+      <button @click.stop="downloadQris" class="mt-6 px-6 py-3.5 bg-white text-zinc-900 rounded-full font-black text-xs flex items-center gap-2 shadow-xl active:scale-95"><Download :size="16" /> Download QRIS</button>
+    </div>
   </div>
 </template>

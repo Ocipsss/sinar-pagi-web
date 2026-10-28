@@ -14,7 +14,7 @@ const cartStore = useCartStore()
 const showModal = ref(false)
 const activeProduct = ref(null)
 const selectedPackage = ref(null)
-const selectedServices = ref([])
+const selectedServices = ref([]) // tetep array biar kompatibel sama buildCartItem, tapi isinya max 1
 
 const productPackages = ref([])
 const availableServices = ref([])
@@ -30,17 +30,24 @@ async function openProductOptions(product) {
 
   try {
     const allPkgs = await db.product_packages.where('productId').equals(product.id).toArray()
-    pkgs = allPkgs.filter(p => {
-      const name = (p.name || '').toUpperCase()
-      const isBelanjaBesar = ['RENCENG', 'RENCENGAN', 'DUS', 'KARDUS'].some(bad => name.includes(bad))
-      return !isBelanjaBesar
-    })
+    pkgs = allPkgs
+      .filter(p => !p.deleted)
+      .filter(p => {
+        const name = (p.name || '').toUpperCase()
+        const isBelanjaBesar = ['RENCENG', 'RENCENGAN', 'DUS', 'KARDUS'].some(bad => name.includes(bad))
+        const isSatuBatang = (p.qty_pcs || 0) === 1
+        return !isBelanjaBesar && !isSatuBatang
+      })
+      .sort((a,b) => (a.order ?? 999) - (b.order ?? 999))
   } catch { pkgs = [] }
 
   try {
-    const allServices = await db.services.toArray()
-    const getIds = (s) => s.productIds && Array.isArray(s.productIds) ? s.productIds : (s.productId ? [s.productId] : [])
-    
+    const allServices = (await db.services.toArray()).filter(s => !s.deleted)
+    const getIds = (s) => {
+      if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
+      if (s.productId) return [s.productId]
+      return []
+    }
     const custom = allServices.filter(s => getIds(s).includes(product.id))
     if (custom.length > 0) {
       services = custom
@@ -54,7 +61,6 @@ async function openProductOptions(product) {
   } catch { services = [] }
 
   const hasOptions = pkgs.length > 0 || services.length > 0
-
   if (!hasOptions) {
     const itemToAdd = buildCartItem(product, [], product.price_sell, null)
     cartStore.addToCart(itemToAdd, 1)
@@ -81,10 +87,14 @@ const totalPrice = computed(() => {
   return price
 })
 
+// INI YANG DIRUBAH MET -> PILIH SALAH SATU, BUKAN CHECKBOX
 function toggleService(svc) {
-  const idx = selectedServices.value.findIndex(s => s.id === svc.id)
-  if (idx >= 0) selectedServices.value.splice(idx, 1)
-  else selectedServices.value.push(svc)
+  const exists = selectedServices.value.find(s => s.id === svc.id)
+  if (exists) {
+    selectedServices.value = [] // klik lagi = batal
+  } else {
+    selectedServices.value = [svc] // cuma boleh 1, jadi replace
+  }
 }
 
 function addToCartWithOptions() {
@@ -108,22 +118,21 @@ function addToCartWithOptions() {
           </router-link>
         </div>
         <div class="relative w-full">
-  <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Search :size="18" /></span>
-  <input 
-    v-model="productStore.searchQuery" 
-    type="text" 
-    placeholder="Cari barang di warung..." 
-    class="w-full pl-10 pr-10 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 placeholder-gray-400 outline-none transition" 
-  />
-  <!-- Tombol X buat clear -->
-  <button 
-    v-if="productStore.searchQuery" 
-    @click="productStore.searchQuery = ''"
-    class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 active:scale-90 transition"
-  >
-    <X :size="18" />
-  </button>
-</div>
+          <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Search :size="18" /></span>
+          <input 
+            v-model="productStore.searchQuery" 
+            type="text" 
+            placeholder="Cari barang di warung..." 
+            class="w-full pl-10 pr-10 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 placeholder-gray-400 outline-none transition" 
+          />
+          <button 
+            v-if="productStore.searchQuery" 
+            @click="productStore.searchQuery = ''"
+            class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 active:scale-90 transition"
+          >
+            <X :size="18" />
+          </button>
+        </div>
         <div class="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
           <button v-for="cat in productStore.categories" :key="cat" @click="productStore.selectedCategory = cat" :class="['px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition shrink-0', productStore.selectedCategory === cat ? 'bg-blue-600 text-white shadow-xs' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">{{ cat }}</button>
         </div>
@@ -165,7 +174,7 @@ function addToCartWithOptions() {
         </div>
 
         <div v-if="productPackages.length > 0" class="space-y-2 mb-4">
-          <label class="text-[10px] font-bold uppercase text-zinc-400">Pilih Paket</label>
+          <label class="text-[10px] font-bold uppercase text-zinc-400">Pilih Paket (urut sesuai kasir)</label>
           <button @click="selectedPackage = null" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition', !selectedPackage ? 'border-blue-600 bg-blue-50/50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-800']">
             <div class="text-left"><p class="text-xs font-bold uppercase">Eceran / Per {{ activeProduct.unit || 'PCS' }}</p><p class="text-sm font-black text-blue-600">{{ formatRupiah(activeProduct.price_sell) }}</p></div>
             <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', !selectedPackage ? 'border-blue-600 bg-blue-600 text-white' : 'border-zinc-300']"><div v-if="!selectedPackage" class="w-2 h-2 bg-white rounded-full"></div></div>
@@ -177,11 +186,16 @@ function addToCartWithOptions() {
         </div>
 
         <div v-if="availableServices.length > 0" class="mb-6 space-y-2">
-          <label class="text-[10px] font-bold uppercase text-zinc-400">Opsi Penyajian ({{ activeProduct.category }})</label>
-          <label v-for="svc in availableServices" :key="svc.id" @click="toggleService(svc)" :class="['w-full p-3.5 rounded-2xl border flex items-center gap-3 cursor-pointer transition', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-50/50 text-amber-900' : 'border-zinc-200 bg-white text-zinc-700']">
-            <div :class="['w-5 h-5 rounded-lg border flex items-center justify-center transition', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-500 text-white' : 'border-zinc-300']"><Flame v-if="selectedServices.find(s => s.id === svc.id)" :size="14" /></div>
-            <div class="flex-1 flex justify-between items-center"><div><p class="text-xs font-bold uppercase">{{ svc.name }}</p><p class="text-[10px] text-zinc-500">Kategori {{ svc.category }}</p></div><p class="text-xs font-black text-amber-600">+ {{ formatRupiah(svc.price) }}</p></div>
-          </label>
+          <label class="text-[10px] font-bold uppercase text-zinc-400">Opsi Penyajian (Pilih 1) - {{ activeProduct.category }}</label>
+          <button v-for="svc in availableServices" :key="svc.id" @click="toggleService(svc)" :class="['w-full p-3.5 rounded-2xl border flex items-center gap-3 transition text-left', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-50/50 text-amber-900' : 'border-zinc-200 bg-white text-zinc-700']">
+            <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-500' : 'border-zinc-300']">
+              <div v-if="selectedServices.find(s => s.id === svc.id)" class="w-2 h-2 bg-white rounded-full"></div>
+            </div>
+            <div class="flex-1 flex justify-between items-center">
+              <div><p class="text-xs font-bold uppercase">{{ svc.name }}</p><p class="text-[10px] text-zinc-500">Kategori {{ svc.category }}</p></div>
+              <p class="text-xs font-black text-amber-600">+ {{ formatRupiah(svc.price) }}</p>
+            </div>
+          </button>
         </div>
 
         <div class="bg-zinc-900 text-white p-4 rounded-2xl flex justify-between items-center mb-4"><span class="text-xs font-bold">Total</span><span class="text-lg font-black">{{ formatRupiah(totalPrice) }}</span></div>

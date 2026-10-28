@@ -10,20 +10,32 @@ export const useCartStore = defineStore('cart', () => {
   }
 
   async function addToCart(product, qty = 1) {
-    const existing = items.value.find(i => i.productId === product.id)
+    const plainProduct = JSON.parse(JSON.stringify(product))
+    
+    const existing = items.value.find(i => 
+      i.productId === plainProduct.id && 
+      i.packageId === (plainProduct.packageId || null) &&
+      JSON.stringify(i.services || []) === JSON.stringify(plainProduct.services || [])
+    )
+    
     if (existing) {
       existing.qty += qty
+      existing.updatedAt = new Date().toISOString()
       await cartRepo.save(existing)
     } else {
       const newItem = {
         id: crypto.randomUUID(),
-        productId: product.id,
-        name: product.name,
-        price_sell: product.price_sell,
-        imageUrl: product.imageUrl,
+        productId: plainProduct.id,
+        name: plainProduct.name,
+        originalName: plainProduct.originalName || plainProduct.name,
+        price_sell: Number(plainProduct.price_sell) || 0,
+        imageUrl: plainProduct.imageUrl || null,
         qty: qty,
-        unit: product.unit || 'PCS',
-        note: product.note || '',
+        unit: plainProduct.unit || 'PCS',
+        note: plainProduct.note || '',
+        packageId: plainProduct.packageId || null,
+        services: plainProduct.services || [],
+        category: plainProduct.category || 'UMUM',
         updatedAt: new Date().toISOString()
       }
       await cartRepo.save(newItem)
@@ -31,13 +43,18 @@ export const useCartStore = defineStore('cart', () => {
     await loadCart()
   }
 
-  async function updateQty(productId, qty) {
-    await cartRepo.updateQty(productId, qty)
+  // FIX: pake cartId (id random), bukan productId
+  async function updateQty(cartId, qty) {
+    if (qty <= 0) {
+      await cartRepo.removeById(cartId)
+    } else {
+      await cartRepo.updateQtyById(cartId, qty)
+    }
     await loadCart()
   }
 
-  async function removeFromCart(productId) {
-    await cartRepo.remove(productId)
+  async function removeFromCart(cartId) {
+    await cartRepo.removeById(cartId)
     await loadCart()
   }
 
@@ -49,14 +66,5 @@ export const useCartStore = defineStore('cart', () => {
   const totalItems = computed(() => items.value.reduce((sum, i) => sum + i.qty, 0))
   const totalPrice = computed(() => items.value.reduce((sum, i) => sum + (i.price_sell * i.qty), 0))
 
-  return {
-    items,
-    loadCart,
-    addToCart,
-    updateQty,
-    removeFromCart,
-    clearCart,
-    totalItems,
-    totalPrice
-  }
+  return { items, loadCart, addToCart, updateQty, removeFromCart, clearCart, totalItems, totalPrice }
 })

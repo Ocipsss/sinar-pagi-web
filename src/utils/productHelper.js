@@ -1,3 +1,11 @@
+// src/utils/productHelper.js - FIX JASA KHUSUS GA BOCOR KE UMUM + NAMA ROKOK CLEAN
+
+const getServiceIds = (s) => {
+  if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
+  if (s.productId) return [s.productId]
+  return []
+}
+
 export function buildCartItem(product, selectedServices = [], finalPrice = null, selectedPackage = null) {
   let finalUnit = product.unit || 'PCS'
   let displayName = product.name
@@ -6,10 +14,8 @@ export function buildCartItem(product, selectedServices = [], finalPrice = null,
   if (selectedPackage) {
     if (selectedPackage.id) {
       finalUnit = selectedPackage.name || product.purchasePackName || 'PAKET'
+      // FIX MET - CUMAN (1 BKS) DOANG, GA USAH 12 BATANG LAGI
       displayName = `${product.name} (${selectedPackage.name})`
-      if (selectedPackage.qty_pcs) {
-        displayName += ` ${selectedPackage.qty_pcs} ${product.unit || 'PCS'}`
-      }
     } else if (typeof selectedPackage === 'object' && selectedPackage.name) {
       finalUnit = selectedPackage.name
       displayName = `${product.name} (${selectedPackage.name})`
@@ -26,30 +32,33 @@ export function buildCartItem(product, selectedServices = [], finalPrice = null,
     id: product.id,
     name: displayName,
     originalName: product.name,
-    price_sell: priceToUse,
+    price_sell: Number(priceToUse) || 0,
     imageUrl: product.imageUrl,
     category: product.category,
     unit: finalUnit,
     note: notes.join(', '),
-    services: selectedServices || [],
+    // CLONE PLAIN BIAR GA DataCloneError DI INDEXEDDB
+    services: JSON.parse(JSON.stringify(selectedServices || [])),
     packageId: selectedPackage?.id || null,
     qty: product.qty
   }
 }
 
-const getServiceIds = (s) => {
-  if (s.productIds && Array.isArray(s.productIds)) return s.productIds
-  if (s.productId) return [s.productId]
-  return []
-}
-
 export function getServicesForProduct(product, allServices = []) {
   if (!product) return []
-  const custom = allServices.filter(s => getServiceIds(s).includes(product.id))
+  const list = allServices.filter(s => !s.deleted)
+  const pCat = (product.category || '').toUpperCase()
+
+  // 1. Cari yang khusus buat produk ini (support multi)
+  const custom = list.filter(s => {
+    const ids = getServiceIds(s)
+    return ids.length > 0 && ids.includes(product.id)
+  })
+  // Kalo ada khusus, CUMA khusus yang keluar, umum HILANG
   if (custom.length > 0) return custom
 
-  const pCat = (product.category || '').toUpperCase()
-  return allServices.filter(s => {
+  // 2. Kalo ga ada khusus, baru umum yang ids nya kosong beneran
+  return list.filter(s => {
     const ids = getServiceIds(s)
     return ids.length === 0 && (s.category || '').toUpperCase() === pCat
   })

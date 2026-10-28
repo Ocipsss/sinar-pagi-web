@@ -38,13 +38,15 @@ export function compressImage(file) {
 }
 
 /**
- * Upload ke Cloudinary (folder: sinar-pagi/products, sinar-pagi/qris, sinar-pagi/bukti-bayar)
+ * Upload ke Cloudinary - folder auto kebuat pas upload pertama
+ * @param {Blob} imageBlob
+ * @param {String} folder - 'sinar-pagi/products' | 'sinar-pagi/qris' | 'sinar-pagi/bukti-bayar'
  */
 export async function uploadToCloudinary(imageBlob, folder = 'sinar-pagi/bukti-bayar') {
   const formData = new FormData()
   formData.append('file', imageBlob)
   formData.append('upload_preset', UPLOAD_PRESET)
-  formData.append('folder', folder)
+  formData.append('folder', folder) // INI YANG BIKIN AUTO FOLDER
 
   const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
     method: 'POST',
@@ -60,6 +62,11 @@ export async function uploadToCloudinary(imageBlob, folder = 'sinar-pagi/bukti-b
     public_id: data.public_id
   }
 }
+
+// HELPER BIAR GA SALAH FOLDER MET
+export const uploadProductImage = (blob) => uploadToCloudinary(blob, 'sinar-pagi/products')
+export const uploadQrisImage = (blob) => uploadToCloudinary(blob, 'sinar-pagi/qris')
+export const uploadBuktiBayar = (blob) => uploadToCloudinary(blob, 'sinar-pagi/bukti-bayar')
 
 export function getThumbUrl(publicIdOrUrl, width = 300) {
   if (!publicIdOrUrl) return ''

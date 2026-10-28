@@ -1,30 +1,33 @@
 import { db } from '../index.js'
 
+function toPlain(obj) {
+  // Paling aman buat IDB: JSON clone biar hilang semua Proxy & function
+  return JSON.parse(JSON.stringify(obj))
+}
+
 export const cartRepo = {
   async getAll() {
     return await db.cart.toArray()
   },
-  async getByProductId(productId) {
-    return await db.cart.where('productId').equals(productId).first()
-  },
+
   async save(item) {
-    return await db.cart.put(item)
+    const plain = toPlain(item)
+    return await db.cart.put(plain)
   },
-  async updateQty(productId, qty) {
-    const item = await this.getByProductId(productId)
+
+  async removeById(cartId) {
+    await db.cart.delete(cartId)
+  },
+
+  async updateQtyById(cartId, qty) {
+    const item = await db.cart.get(cartId)
     if (item) {
-      if (qty <= 0) {
-        await this.remove(productId)
-      } else {
-        item.qty = qty
-        item.updatedAt = new Date().toISOString()
-        await db.cart.put(item)
-      }
+      item.qty = qty
+      item.updatedAt = new Date().toISOString()
+      await db.cart.put(toPlain(item))
     }
   },
-  async remove(productId) {
-    await db.cart.where('productId').equals(productId).delete()
-  },
+
   async clear() {
     await db.cart.clear()
   }

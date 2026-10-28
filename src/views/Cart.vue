@@ -54,16 +54,16 @@ onMounted(async () => {
 
             <div class="flex items-center gap-3">
               <div class="flex items-center bg-gray-100 rounded-xl p-1 gap-2">
-                <button @click="cartStore.updateQty(item.productId, item.qty - 1)" class="p-1 text-gray-600 hover:bg-white rounded-lg transition shadow-xs">
+                <button @click="cartStore.updateQty(item.id, item.qty - 1)" class="p-1 text-gray-600 hover:bg-white rounded-lg transition shadow-xs">
                   <Minus :size="14" />
                 </button>
                 <span class="text-sm font-bold text-gray-800 w-5 text-center">{{ item.qty }}</span>
-                <button @click="cartStore.updateQty(item.productId, item.qty + 1)" class="p-1 text-gray-600 hover:bg-white rounded-lg transition shadow-xs">
+                <button @click="cartStore.updateQty(item.id, item.qty + 1)" class="p-1 text-gray-600 hover:bg-white rounded-lg transition shadow-xs">
                   <Plus :size="14" />
                 </button>
               </div>
 
-              <button @click="cartStore.removeFromCart(item.productId)" class="p-2 text-red-500 hover:bg-red-50 rounded-xl transition">
+              <button @click="cartStore.removeFromCart(item.id)" class="p-2 text-red-500 hover:bg-red-50 rounded-xl transition">
                 <Trash2 :size="18" />
               </button>
             </div>
