@@ -246,7 +246,7 @@ async function handleCheckout() {
             <p class="text-xs text-gray-500">Tap gambar untuk fullscreen • Scan dengan BCA, BRI, Dana, OVO, GoPay, dll.</p>
 
             <button @click="downloadQris" class="w-full max-w-[320px] flex items-center justify-center gap-2 px-4 py-3 bg-zinc-900 text-white rounded-xl text-xs font-black active:scale-95 transition shadow-md hover:bg-black">
-              <Download :size="16" /> Download QRIS (Buat Bayar 1 HP)
+              <Download :size="16" /> Download QRIS
             </button>
             <p class="text-[10px] text-zinc-400 max-w-[320px] leading-tight">Kalo cuma punya 1 HP: Download dulu, baru buka e-wallet > Bayar > Pilih dari Galeri / Upload QRIS</p>
           </div>
@@ -258,7 +258,7 @@ async function handleCheckout() {
               <input type="file" accept="image/*" @change="handleFileChange" class="hidden" />
             </label>
             <div v-if="uploading" class="flex items-center gap-2 text-xs text-blue-600 font-medium">
-              <Loader2 :size="14" class="animate-spin" /> Mengompres & mengunggah...
+              <Loader2 :size="14" class="animate-spin" /> Mengunggah...
             </div>
             <div v-if="buktiUrl" class="flex items-center gap-2 text-xs text-emerald-600 font-medium bg-emerald-50 p-2.5 rounded-xl border border-emerald-100">
               <CheckCircle :size="16" /> Bukti bayar berhasil diunggah!
