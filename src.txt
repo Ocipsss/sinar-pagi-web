@@ -1,3 +1,12 @@
+===== src/App.vue =====
+<script setup>
+// Root Component Warung Sinar Pagi Web
+</script>
+
+<template>
+  <router-view />
+</template>
+
 ===== src/components/ui/Button.vue =====
 <script setup>
 defineProps({
@@ -55,266 +64,116 @@ defineEmits(['close'])
   </div>
 </template>
 
-===== src/stores/productStore.js =====
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import { productService } from '../services/productService'
-import { productRepo } from '../db/repositories/productRepository'
+===== src/db/index.js =====
+// src/db/index.js - FINAL CLEAN WEB sinkron sama kasir v1 reset
+import Dexie from 'dexie'
 
-export const useProductStore = defineStore('product', () => {
-  const products = ref([])
-  const loading = ref(false)
-  const searchQuery = ref('')
-  const selectedCategory = ref('SEMUA')
+export const db = new Dexie('SinarPagiWebDB')
 
-  const categories = computed(() => {
-    const cats = new Set(products.value.map(p => p.category || 'UMUM'))
-    return ['SEMUA', ...Array.from(cats)]
-  })
+db.version(1).stores({
+  products: 'id, name, category, isPublished, updatedAt, synced, deleted',
+  product_packages: 'id, productId, name, order, qty_pcs, price_sell, updatedAt, synced, deleted',
+  services: 'id, name, price, category, *productIds, productId, updatedAt, synced, deleted',
+  cart: 'id, productId, updatedAt',
+  settings: 'id, updatedAt'
+})
 
-  const filteredProducts = computed(() => {
-    return products.value.filter(p => {
-      const matchSearch = p.name.toLowerCase().includes(searchQuery.value.toLowerCase())
-      const matchCategory = selectedCategory.value === 'SEMUA' || p.category === selectedCategory.value
-      return matchSearch && matchCategory
+export default db
+===== src/db/repositories/cartRepository.js =====
+import { db } from '../index.js'
+
+function toPlain(obj) {
+  // Paling aman buat IDB: JSON clone biar hilang semua Proxy & function
+  return JSON.parse(JSON.stringify(obj))
+}
+
+export const cartRepo = {
+  async getAll() {
+    return await db.cart.toArray()
+  },
+
+  async save(item) {
+    const plain = toPlain(item)
+    return await db.cart.put(plain)
+  },
+
+  async removeById(cartId) {
+    await db.cart.delete(cartId)
+  },
+
+  async updateQtyById(cartId, qty) {
+    const item = await db.cart.get(cartId)
+    if (item) {
+      item.qty = qty
+      item.updatedAt = new Date().toISOString()
+      await db.cart.put(toPlain(item))
+    }
+  },
+
+  async clear() {
+    await db.cart.clear()
+  }
+}
+===== src/db/repositories/productRepository.js =====
+import { db } from '../index.js'
+
+export const productRepo = {
+  getPublished: async () => {
+    const list = await db.products.where('isPublished').equals(1).toArray()
+    return list.filter(p => !p.deleted)
+  },
+  getById: async (id) => {
+    const item = await db.products.get(id)
+    return item && item.isPublished && !item.deleted ? item : null
+  },
+  getByCategory: async (category) => {
+    if (!category || category === 'SEMUA') return productRepo.getPublished()
+    const list = await db.products.where('category').equals(category).toArray()
+    return list.filter(p => p.isPublished && !p.deleted)
+  },
+  bulkSave: async (products) => {
+    if (!products.length) return
+    await db.transaction('rw', db.products, async () => {
+      for (const p of products) {
+        await db.products.put({ ...p, synced: 1 })
+      }
     })
-  })
-
-  async function loadProducts() {
-    loading.value = true
-    try {
-      const data = await productService.syncPublishedProducts()
-      products.value = data || []
-    } catch (err) {
-      console.error('[ProductStore] Gagal memuat produk:', err)
-      products.value = await productRepo.getPublished()
-    } finally {
-      loading.value = false
-    }
-  }
-
-  return {
-    products,
-    loading,
-    searchQuery,
-    selectedCategory,
-    categories,
-    filteredProducts,
-    loadProducts
-  }
-})
-
-===== src/stores/cartStore.js =====
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import { cartRepo } from '../db/repositories/cartRepository'
-
-export const useCartStore = defineStore('cart', () => {
-  const items = ref([])
-
-  async function loadCart() {
-    items.value = await cartRepo.getAll()
-  }
-
-  async function addToCart(product, qty = 1) {
-    const plainProduct = JSON.parse(JSON.stringify(product))
-    
-    const existing = items.value.find(i => 
-      i.productId === plainProduct.id && 
-      i.packageId === (plainProduct.packageId || null) &&
-      JSON.stringify(i.services || []) === JSON.stringify(plainProduct.services || [])
-    )
-    
-    if (existing) {
-      existing.qty += qty
-      existing.updatedAt = new Date().toISOString()
-      await cartRepo.save(existing)
-    } else {
-      const newItem = {
-        id: crypto.randomUUID(),
-        productId: plainProduct.id,
-        name: plainProduct.name,
-        originalName: plainProduct.originalName || plainProduct.name,
-        price_sell: Number(plainProduct.price_sell) || 0,
-        imageUrl: plainProduct.imageUrl || null,
-        qty: qty,
-        unit: plainProduct.unit || 'PCS',
-        note: plainProduct.note || '',
-        packageId: plainProduct.packageId || null,
-        services: plainProduct.services || [],
-        category: plainProduct.category || 'UMUM',
-        updatedAt: new Date().toISOString()
-      }
-      await cartRepo.save(newItem)
-    }
-    await loadCart()
-  }
-
-  // FIX: pake cartId (id random), bukan productId
-  async function updateQty(cartId, qty) {
-    if (qty <= 0) {
-      await cartRepo.removeById(cartId)
-    } else {
-      await cartRepo.updateQtyById(cartId, qty)
-    }
-    await loadCart()
-  }
-
-  async function removeFromCart(cartId) {
-    await cartRepo.removeById(cartId)
-    await loadCart()
-  }
-
-  async function clearCart() {
-    await cartRepo.clear()
-    items.value = []
-  }
-
-  const totalItems = computed(() => items.value.reduce((sum, i) => sum + i.qty, 0))
-  const totalPrice = computed(() => items.value.reduce((sum, i) => sum + (i.price_sell * i.qty), 0))
-
-  return { items, loadCart, addToCart, updateQty, removeFromCart, clearCart, totalItems, totalPrice }
-})
-===== src/services/firebase.js =====
-// src/services/firebase.js
-import { initializeApp, getApps, getApp } from 'firebase/app'
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'
-// Konfigurasi Firebase dari Environment Variables Vite
-const firebaseConfig = {
-apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'sinarpagi-db.firebaseapp.com',
-projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'sinarpagi-db',
-storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-appId: import.meta.env.VITE_FIREBASE_APP_ID
-}
-// Singleton initialization untuk menghindari multiple app instances
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig)
-// Mencegah AbortError long-polling dengan memaksa WebSockets native
-const db = initializeFirestore(app, {
-experimentalForceLongPolling: false,
-experimentalAutoDetectLongPolling: false,
-localCache: persistentLocalCache({
-tabManager: persistentMultipleTabManager()
-})
-})
-export { app, db }
-
-===== src/services/productService.js =====
-import { collection, getDocs, query, where } from 'firebase/firestore'
-import { db as firestoreDb } from './firebase.js'
-import { productRepo } from '../db/repositories/productRepository.js'
-import { db } from '../db/index.js'
-
-const getServiceIds = (s) => {
-  if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
-  if (s.productId) return [s.productId]
-  return []
-}
-
-export const productService = {
-  async syncPublishedProducts() {
-    try {
-      if (!navigator.onLine) {
-        return await productRepo.getPublished()
-      }
-
-      const q = query(collection(firestoreDb, 'products'), where('isPublished', '==', true))
-      const snapshot = await getDocs(q)
-      const remoteProducts = []
-      snapshot.forEach(doc => {
-        const data = doc.data()
-        if (data.deleted) return
-        remoteProducts.push({
-          id: doc.id,
-          name: data.name || '',
-          category: data.category || 'UMUM',
-          unit: data.unit || 'PCS',
-          price_sell: Number(data.price_sell) || 0,
-          price_modal: Number(data.price_modal) || 0,
-          packPrice: Number(data.packPrice) || 0,
-          packQty: Number(data.packQty) || 0,
-          purchasePackName: data.purchasePackName || '',
-          qty: Number(data.qty) || 0,
-          minStock: Number(data.minStock) || 2,
-          isPublished: data.isPublished ? 1 : 0,
-          imageUrl: data.imageUrl || null,
-          imagePublicId: data.imagePublicId || null,
-          updatedAt: data.updatedAt || new Date().toISOString(),
-          deleted: 0,
-          synced: 1
-        })
-      })
-      if (remoteProducts.length > 0) await productRepo.bulkSave(remoteProducts)
-
-      // 2. Sync product_packages
-      try {
-        const pkgSnap = await getDocs(collection(firestoreDb, 'product_packages'))
-        const remotePkgs = pkgSnap.docs.map(d => {
-          const data = d.data()
-          return { ...data, id: d.id, synced: 1, deleted: data.deleted ? 1 : 0 }
-        })
-        if (remotePkgs.length) await db.product_packages.bulkPut(remotePkgs)
-      } catch (e) {
-        console.warn('[ProductService] Gagal sync product_packages', e)
-      }
-
-      // 3. Sync services - FIX MULTI PRODUK
-      try {
-        const svcSnap = await getDocs(collection(firestoreDb, 'services'))
-        const remoteSvcs = svcSnap.docs.map(d => {
-          const data = d.data()
-          // normalisasi biar support lama & baru
-          const ids = getServiceIds(data)
-          return {
-            ...data,
-            id: d.id,
-            productId: data.productId || null,
-            productIds: ids,
-            category: (data.category || 'UMUM').toUpperCase(),
-            synced: 1,
-            deleted: data.deleted ? 1 : 0
-          }
-        })
-        if (remoteSvcs.length) await db.services.bulkPut(remoteSvcs)
-        console.log(`[ProductService] Synced ${remoteSvcs.length} services with multi-product support`)
-      } catch (e) {
-        console.warn('[ProductService] Gagal sync services', e)
-      }
-
-      return await productRepo.getPublished()
-    } catch (error) {
-      console.error('[ProductService] Error:', error)
-      return await productRepo.getPublished()
-    }
   }
 }
-===== src/services/qrisService.js =====
-import { doc, getDoc } from 'firebase/firestore'
-import { db as firestoreDb } from './firebase.js'
+===== src/main.js =====
+import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+import App from './App.vue'
+import router from './router'
+import './style.css'
 
-export const qrisService = {
-  async fetchRemoteSettings() {
-    if (!navigator.onLine) return null
-    try {
-      const docRef = doc(firestoreDb, 'settings', 'qris')
-      const docSnap = await getDoc(docRef)
-      if (docSnap.exists()) {
-        const data = docSnap.data()
-        return {
-          id: 'qris',
-          qrisUrl: data.qrisUrl || '',
-          merchantName: data.merchantName || 'WARUNG SINAR PAGI',
-          nmid: data.nmid || '',
-          updatedAt: data.updatedAt || new Date().toISOString()
-        }
-      }
-    } catch (error) {
-      console.error('[QrisService] Error:', error)
-    }
-    return null
-  }
-}
+const app = createApp(App)
+
+app.use(createPinia())
+app.use(router)
+
+app.mount('#app')
+
+===== src/router/index.js =====
+import { createRouter, createWebHistory } from 'vue-router'
+import Catalog from '../views/Catalog.vue'
+import Cart from '../views/Cart.vue'
+import Checkout from '../views/Checkout.vue'
+import CheckoutSuccess from '../views/CheckoutSuccess.vue'
+
+const routes = [
+  { path: '/', name: 'Catalog', component: Catalog },
+  { path: '/cart', name: 'Cart', component: Cart },
+  { path: '/checkout', name: 'Checkout', component: Checkout },
+  { path: '/checkout-success', name: 'CheckoutSuccess', component: CheckoutSuccess }
+]
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes
+})
+
+export default router
 
 ===== src/services/cloudinaryService.js =====
 // src/services/cloudinaryService.js - Sinar Pagi Web
@@ -402,58 +261,395 @@ export function getFullUrl(publicIdOrUrl, width = 800) {
   }
   return publicIdOrUrl.replace('/upload/', `/upload/w_${width},f_auto,q_auto/`)
 }
+===== src/services/firebase.js =====
+// src/services/firebase.js
+import { initializeApp, getApps, getApp } from 'firebase/app'
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'
+// Konfigurasi Firebase dari Environment Variables Vite
+const firebaseConfig = {
+apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'sinarpagi-db.firebaseapp.com',
+projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'sinarpagi-db',
+storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+appId: import.meta.env.VITE_FIREBASE_APP_ID
+}
+// Singleton initialization untuk menghindari multiple app instances
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig)
+// Mencegah AbortError long-polling dengan memaksa WebSockets native
+const db = initializeFirestore(app, {
+experimentalForceLongPolling: false,
+experimentalAutoDetectLongPolling: false,
+localCache: persistentLocalCache({
+tabManager: persistentMultipleTabManager()
+})
+})
+export { app, db }
+
+===== src/services/productService.js =====
+// src/services/productService.js - SUPER EKSTRIM DELTA 1 BARANG = 1 READ
+import { collection, getDocs, query, where, doc, getDoc } from 'firebase/firestore'
+import { db as firestoreDb } from './firebase.js'
+import { productRepo } from '../db/repositories/productRepository.js'
+import { db } from '../db/index.js'
+
+const getServiceIds = (s) => {
+  if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
+  if (s.productId) return [s.productId]
+  return []
+}
+
+const VERSION_KEY = 'sinar_pagi_catalog_version'
+const LAST_PULL_KEY = 'sinar_pagi_last_pull'
+
+export const productService = {
+  async syncPublishedProducts() {
+    try {
+      if (!navigator.onLine) {
+        return await productRepo.getPublished()
+      }
+
+      // 1. CEK VERSI DULU - CUMA 1 READ
+      let remoteVersion = null
+      try {
+        const metaRef = doc(firestoreDb, 'meta', 'catalog')
+        const metaSnap = await getDoc(metaRef)
+        if (metaSnap.exists()) {
+          const metaData = metaSnap.data()
+          remoteVersion = metaData.version || metaData.updatedAt || null
+        }
+      } catch (e) {
+        console.warn('[ProductService] Gagal cek meta version', e)
+      }
+
+      // 2. KALO VERSI SAMA - 0 READS TAMBAHAN
+      if (remoteVersion) {
+        try {
+          const localVersion = localStorage.getItem(VERSION_KEY)
+          if (localVersion && localVersion === String(remoteVersion)) {
+            const localData = await productRepo.getPublished()
+            if (localData.length > 0) {
+              console.log('[ProductService] CACHE HIT - 0 reads tambahan! Hemat')
+              return localData
+            }
+          }
+        } catch {}
+      }
+
+      const lastPull = localStorage.getItem(LAST_PULL_KEY)
+
+      // 3. DELTA SYNC - CUMA YANG BERUBAH DOANG (1 BARANG = 1 READ)
+      if (lastPull && remoteVersion) {
+        console.log(`[ProductService] DELTA SYNC since ${lastPull}...`)
+        let totalReads = 0
+
+        // Produk yang berubah
+        try {
+          const qProd = query(collection(firestoreDb, 'products'), where('updatedAt', '>', lastPull))
+          const snapProd = await getDocs(qProd)
+          totalReads += snapProd.size
+          if (!snapProd.empty) {
+            const changed = []
+            snapProd.forEach(d => {
+              const data = d.data()
+              // handle soft delete
+              if (data.deleted) {
+                changed.push({ id: d.id, deleted: 1, updatedAt: data.updatedAt, synced: 1 })
+              } else {
+                changed.push({
+                  id: d.id,
+                  name: data.name || '',
+                  category: data.category || 'UMUM',
+                  unit: data.unit || 'PCS',
+                  price_sell: Number(data.price_sell) || 0,
+                  price_modal: Number(data.price_modal) || 0,
+                  packPrice: Number(data.packPrice) || 0,
+                  packQty: Number(data.packQty) || 0,
+                  purchasePackName: data.purchasePackName || '',
+                  qty: Number(data.qty) || 0,
+                  minStock: Number(data.minStock) || 2,
+                  isPublished: data.isPublished ? 1 : 0,
+                  imageUrl: data.imageUrl || null,
+                  imagePublicId: data.imagePublicId || null,
+                  updatedAt: data.updatedAt || new Date().toISOString(),
+                  deleted: 0,
+                  synced: 1
+                })
+              }
+            })
+            if (changed.length) await db.products.bulkPut(changed)
+            console.log(`[ProductService] Delta products: ${changed.length} reads (bukan 250)`)
+          }
+        } catch (e) {
+          console.warn('[ProductService] Delta products gagal', e)
+        }
+
+        // Paket yang berubah
+        try {
+          const qPkg = query(collection(firestoreDb, 'product_packages'), where('updatedAt', '>', lastPull))
+          const snapPkg = await getDocs(qPkg)
+          totalReads += snapPkg.size
+          if (!snapPkg.empty) {
+            const changedPkg = snapPkg.docs.map(d => ({ ...d.data(), id: d.id, synced: 1, deleted: d.data().deleted ? 1 : 0 }))
+            // hapus yang deleted
+            const toPut = changedPkg.filter(p => !p.deleted)
+            const toDelete = changedPkg.filter(p => p.deleted)
+            if (toPut.length) await db.product_packages.bulkPut(toPut)
+            if (toDelete.length) {
+              for (const del of toDelete) {
+                await db.product_packages.update(del.id, { deleted: true })
+              }
+            }
+            console.log(`[ProductService] Delta packages: ${snapPkg.size} reads`)
+          }
+        } catch (e) {
+          console.warn('[ProductService] Delta packages gagal', e)
+        }
+
+        // Jasa yang berubah
+        try {
+          const qSvc = query(collection(firestoreDb, 'services'), where('updatedAt', '>', lastPull))
+          const snapSvc = await getDocs(qSvc)
+          totalReads += snapSvc.size
+          if (!snapSvc.empty) {
+            const changedSvc = []
+            snapSvc.forEach(d => {
+              const data = d.data()
+              if (data.deleted) {
+                changedSvc.push({ id: d.id, deleted: 1, updatedAt: data.updatedAt, synced: 1 })
+              } else {
+                const ids = getServiceIds(data)
+                changedSvc.push({
+                  ...data,
+                  id: d.id,
+                  name: data.name || '',
+                  price: Number(data.price) || 0,
+                  productId: data.productId || null,
+                  productIds: ids,
+                  category: (data.category || 'UMUM').toUpperCase(),
+                  updatedAt: data.updatedAt || new Date().toISOString(),
+                  synced: 1,
+                  deleted: 0
+                })
+              }
+            })
+            if (changedSvc.length) await db.services.bulkPut(changedSvc)
+            console.log(`[ProductService] Delta services: ${changedSvc.length} reads`)
+          }
+        } catch (e) {
+          console.warn('[ProductService] Delta services gagal', e)
+        }
+
+        console.log(`[ProductService] TOTAL DELTA READS: ${totalReads} (hemat ${351 - totalReads} reads)`)
+
+        // simpan versi + lastPull
+        try {
+          if (remoteVersion) localStorage.setItem(VERSION_KEY, String(remoteVersion))
+          localStorage.setItem(LAST_PULL_KEY, new Date().toISOString())
+        } catch {}
+
+        return await productRepo.getPublished()
+      }
+
+      // 4. FULL SYNC - CUMA PERTAMA KALI AJA (351 reads sekali seumur hidup)
+      console.log('[ProductService] First time, sync full 351 reads...')
+
+      const q = query(collection(firestoreDb, 'products'), where('isPublished', '==', true))
+      const snapshot = await getDocs(q)
+      const remoteProducts = []
+      snapshot.forEach(doc => {
+        const data = doc.data()
+        if (data.deleted) return
+        remoteProducts.push({
+          id: doc.id,
+          name: data.name || '',
+          category: data.category || 'UMUM',
+          unit: data.unit || 'PCS',
+          price_sell: Number(data.price_sell) || 0,
+          price_modal: Number(data.price_modal) || 0,
+          packPrice: Number(data.packPrice) || 0,
+          packQty: Number(data.packQty) || 0,
+          purchasePackName: data.purchasePackName || '',
+          qty: Number(data.qty) || 0,
+          minStock: Number(data.minStock) || 2,
+          isPublished: data.isPublished ? 1 : 0,
+          imageUrl: data.imageUrl || null,
+          imagePublicId: data.imagePublicId || null,
+          updatedAt: data.updatedAt || new Date().toISOString(),
+          deleted: 0,
+          synced: 1
+        })
+      })
+      if (remoteProducts.length > 0) await productRepo.bulkSave(remoteProducts)
+
+      try {
+        const pkgSnap = await getDocs(collection(firestoreDb, 'product_packages'))
+        const remotePkgs = pkgSnap.docs
+          .map(d => ({ ...d.data(), id: d.id, synced: 1, deleted: d.data().deleted ? 1 : 0 }))
+          .filter(p => !p.deleted)
+        if (remotePkgs.length) await db.product_packages.bulkPut(remotePkgs)
+      } catch (e) {
+        console.warn('[ProductService] Gagal sync packages', e)
+      }
+
+      try {
+        const svcSnap = await getDocs(collection(firestoreDb, 'services'))
+        const remoteSvcs = svcSnap.docs
+          .map(d => {
+            const data = d.data()
+            if (data.deleted) return null
+            const ids = getServiceIds(data)
+            return {
+              ...data,
+              id: d.id,
+              name: data.name || '',
+              price: Number(data.price) || 0,
+              productId: data.productId || null,
+              productIds: ids,
+              category: (data.category || 'UMUM').toUpperCase(),
+              updatedAt: data.updatedAt || new Date().toISOString(),
+              synced: 1,
+              deleted: 0
+            }
+          })
+          .filter(Boolean)
+        if (remoteSvcs.length) await db.services.bulkPut(remoteSvcs)
+      } catch (e) {
+        console.warn('[ProductService] Gagal sync services', e)
+      }
+
+      try {
+        if (remoteVersion) {
+          localStorage.setItem(VERSION_KEY, String(remoteVersion))
+        } else {
+          localStorage.setItem(VERSION_KEY, String(Date.now()))
+        }
+        localStorage.setItem(LAST_PULL_KEY, new Date().toISOString())
+      } catch {}
+
+      return await productRepo.getPublished()
+    } catch (error) {
+      console.error('[ProductService] Error:', error)
+      return await productRepo.getPublished()
+    }
+  }
+}
+===== src/services/qrisService.js =====
+import { doc, getDoc } from 'firebase/firestore'
+import { db as firestoreDb } from './firebase.js'
+
+const QRIS_CACHE_KEY = 'sinar_pagi_qris_cache'
+const QRIS_CACHE_TIME_KEY = 'sinar_pagi_qris_cache_time'
+const QRIS_CACHE_DURATION = 60 * 60 * 1000 // 1 jam - QRIS jarang ganti
+
+export const qrisService = {
+  async fetchRemoteSettings() {
+    if (!navigator.onLine) {
+      // offline - coba ambil cache
+      try {
+        const cached = localStorage.getItem(QRIS_CACHE_KEY)
+        if (cached) return JSON.parse(cached)
+      } catch {}
+      return null
+    }
+
+    // HEMAT KUOTA: cek cache dulu
+    try {
+      const lastCache = Number(localStorage.getItem(QRIS_CACHE_TIME_KEY) || 0)
+      const now = Date.now()
+      if (lastCache && (now - lastCache < QRIS_CACHE_DURATION)) {
+        const cached = localStorage.getItem(QRIS_CACHE_KEY)
+        if (cached) {
+          console.log('[QrisService] Cache hit - pake lokal, hemat 1 read')
+          return JSON.parse(cached)
+        }
+      }
+    } catch {}
+
+    try {
+      const docRef = doc(firestoreDb, 'settings', 'qris')
+      const docSnap = await getDoc(docRef)
+      if (docSnap.exists()) {
+        const data = docSnap.data()
+        const result = {
+          id: 'qris',
+          qrisUrl: data.qrisUrl || '',
+          merchantName: data.merchantName || 'WARUNG SINAR PAGI',
+          nmid: data.nmid || '',
+          updatedAt: data.updatedAt || new Date().toISOString()
+        }
+        // simpan cache
+        try {
+          localStorage.setItem(QRIS_CACHE_KEY, JSON.stringify(result))
+          localStorage.setItem(QRIS_CACHE_TIME_KEY, String(Date.now()))
+        } catch {}
+        return result
+      }
+    } catch (error) {
+      console.error('[QrisService] Error:', error)
+      // kalo error, fallback ke cache
+      try {
+        const cached = localStorage.getItem(QRIS_CACHE_KEY)
+        if (cached) return JSON.parse(cached)
+      } catch {}
+    }
+    return null
+  }
+}
 ===== src/services/waService.js =====
-// src/services/waService.js - FORMAT RAPIH ALA STRUK
+// src/services/waService.js - FIX SPASI BIAR RAPIH PAS LANGSUNG KIRIM WA + HARGA JASA GA DOUBLE
 export const waService = {
   sendOrderToWhatsApp(customer, items, total, paymentMethod, buktiUrl) {
     const phone = import.meta.env.VITE_WA_NUMBER || '6281234567890'
     
     const isDelivery = customer.deliveryType === 'delivery'
-    const ongkir = customer.deliveryFee || 0
+    const ongkir = Number(customer.deliveryFee) || 0
+    const subtotal = total - ongkir
 
-    // Build pesan pake \n biasa, nanti di-encode
     const lines = []
     lines.push(`*PESANAN BARU - WARUNG SINAR PAGI*`)
     lines.push(`━━━━━━━━━━━━━━━━━━━━━━`)
     lines.push(`👤 Nama: ${customer.name}`)
-    lines.push(isDelivery ? `🚚 Opsi: Diantar (+ ${fmt(ongkir)})` : `🏪 Opsi: Ambil di Warung`)
-    lines.push(`📍 ${isDelivery ? 'Alamat' : 'Catatan'}: ${customer.address}`)
+    lines.push(isDelivery ? `🚚 Opsi: Diantar` : `🏪 Opsi: Ambil di Warung`)
+    lines.push(`📍 Alamat / Patokan: ${customer.address}`)
+    if (customer.notes && customer.notes.trim()) {
+      lines.push(`📝 Catatan: ${customer.notes.trim()}`)
+    }
     lines.push(``)
     lines.push(`*RINCIAN PESANAN:*`)
+    lines.push(``) // kasih jarak biar ga nempel
 
     items.forEach((item, idx) => {
-      const qty = item.qty || 1
+      const qty = Number(item.qty || item.quantity || 1)
       const unitPrice = Number(item.price_sell) || 0
       const sub = unitPrice * qty
 
-      // 1. Nama - potong biar ga kepanjangan banget di WA
-      // Nama udah termasuk paket dari buildCartItem
+      // 1. Nama produk + qty - udah clean (1 BKS) doang tanpa 12 BATANG
       lines.push(`${idx + 1}. ${item.name} x${qty}`)
       
-      // 2. Harga satuan + subtotal - 1 baris aja biar rapi
+      // 2. Harga - udah include jasa
       if (qty > 1) {
         lines.push(`   ${qty} x ${fmt(unitPrice)} = ${fmt(sub)}`)
       } else {
         lines.push(`   ${fmt(sub)}`)
       }
 
-      // 3. Detail jasa - cuma 1x aja, jangan dari note + services double
-      // Kita ambil dari services yang ada harganya, biar jelas
+      // 3. Jasa - FIX MET, jangan tampilin + Rp 2.000 lagi karena 4.500 udah include jasa
+      // Cuma tampilin nama jasa nya aja biar tau opsi apa yang dipilih
       if (item.services && item.services.length > 0) {
         item.services.forEach(s => {
-          // Kalo harganya 0 jangan ditampilin Rp 0
-          if ((s.price || 0) > 0) {
-            lines.push(`   + ${s.name}: ${fmt(s.price)}`)
-          } else {
-            lines.push(`   + ${s.name}`)
-          }
+          lines.push(`   + ${s.name}`)
         })
       }
+
+      if (item.note && !item.services?.length) {
+        lines.push(`   > ${item.note}`)
+      }
+
+      lines.push(``) // INI KUNCINYA MET - SPASI 1 BARIS TIAP PRODUK
     })
 
-    lines.push(``)
     lines.push(`━━━━━━━━━━━━━━━━━━━━━━`)
-    const subtotal = total - ongkir
     lines.push(`Subtotal: ${fmt(subtotal)}`)
     lines.push(ongkir > 0 ? `Ongkir: ${fmt(ongkir)}` : `Ongkir: Gratis`)
     lines.push(`*Total: ${fmt(total)}*`)
@@ -477,6 +673,127 @@ function fmt(n) {
     minimumFractionDigits: 0 
   }).format(n || 0)
 }
+===== src/stores/cartStore.js =====
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import { cartRepo } from '../db/repositories/cartRepository'
+
+export const useCartStore = defineStore('cart', () => {
+  const items = ref([])
+
+  async function loadCart() {
+    items.value = await cartRepo.getAll()
+  }
+
+  async function addToCart(product, qty = 1) {
+    const plainProduct = JSON.parse(JSON.stringify(product))
+    
+    const existing = items.value.find(i => 
+      i.productId === plainProduct.id && 
+      i.packageId === (plainProduct.packageId || null) &&
+      JSON.stringify(i.services || []) === JSON.stringify(plainProduct.services || [])
+    )
+    
+    if (existing) {
+      existing.qty += qty
+      existing.updatedAt = new Date().toISOString()
+      await cartRepo.save(existing)
+    } else {
+      const newItem = {
+        id: crypto.randomUUID(),
+        productId: plainProduct.id,
+        name: plainProduct.name,
+        originalName: plainProduct.originalName || plainProduct.name,
+        price_sell: Number(plainProduct.price_sell) || 0,
+        imageUrl: plainProduct.imageUrl || null,
+        qty: qty,
+        unit: plainProduct.unit || 'PCS',
+        note: plainProduct.note || '',
+        packageId: plainProduct.packageId || null,
+        services: plainProduct.services || [],
+        category: plainProduct.category || 'UMUM',
+        updatedAt: new Date().toISOString()
+      }
+      await cartRepo.save(newItem)
+    }
+    await loadCart()
+  }
+
+  // FIX: pake cartId (id random), bukan productId
+  async function updateQty(cartId, qty) {
+    if (qty <= 0) {
+      await cartRepo.removeById(cartId)
+    } else {
+      await cartRepo.updateQtyById(cartId, qty)
+    }
+    await loadCart()
+  }
+
+  async function removeFromCart(cartId) {
+    await cartRepo.removeById(cartId)
+    await loadCart()
+  }
+
+  async function clearCart() {
+    await cartRepo.clear()
+    items.value = []
+  }
+
+  const totalItems = computed(() => items.value.reduce((sum, i) => sum + i.qty, 0))
+  const totalPrice = computed(() => items.value.reduce((sum, i) => sum + (i.price_sell * i.qty), 0))
+
+  return { items, loadCart, addToCart, updateQty, removeFromCart, clearCart, totalItems, totalPrice }
+})
+===== src/stores/productStore.js =====
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import { productService } from '../services/productService'
+import { productRepo } from '../db/repositories/productRepository'
+
+export const useProductStore = defineStore('product', () => {
+  const products = ref([])
+  const loading = ref(false)
+  const searchQuery = ref('')
+  const selectedCategory = ref('SEMUA')
+
+  const categories = computed(() => {
+    const cats = new Set(products.value.map(p => p.category || 'UMUM'))
+    return ['SEMUA', ...Array.from(cats)]
+  })
+
+  const filteredProducts = computed(() => {
+    return products.value.filter(p => {
+      const matchSearch = p.name.toLowerCase().includes(searchQuery.value.toLowerCase())
+      const matchCategory = selectedCategory.value === 'SEMUA' || p.category === selectedCategory.value
+      return matchSearch && matchCategory
+    })
+  })
+
+  async function loadProducts() {
+    loading.value = true
+    try {
+      const data = await productService.syncPublishedProducts()
+      products.value = data || []
+    } catch (err) {
+      console.error('[ProductStore] Gagal memuat produk:', err)
+      products.value = await productRepo.getPublished()
+    } finally {
+      loading.value = false
+    }
+  }
+
+  return {
+    products,
+    loading,
+    searchQuery,
+    selectedCategory,
+    categories,
+    filteredProducts,
+    loadProducts
+  }
+})
+===== src/style.css =====
+@import "tailwindcss";
 ===== src/utils/formatters.js =====
 export function formatRupiah(val) {
   return new Intl.NumberFormat('id-ID', {
@@ -487,7 +804,13 @@ export function formatRupiah(val) {
 }
 
 ===== src/utils/productHelper.js =====
-// src/utils/productHelpers.js - FIX JASA KHUSUS GA MUNCUL DI UMUM
+// src/utils/productHelper.js - FIX JASA KHUSUS GA BOCOR KE UMUM + NAMA ROKOK CLEAN
+
+const getServiceIds = (s) => {
+  if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
+  if (s.productId) return [s.productId]
+  return []
+}
 
 export function buildCartItem(product, selectedServices = [], finalPrice = null, selectedPackage = null) {
   let finalUnit = product.unit || 'PCS'
@@ -497,10 +820,8 @@ export function buildCartItem(product, selectedServices = [], finalPrice = null,
   if (selectedPackage) {
     if (selectedPackage.id) {
       finalUnit = selectedPackage.name || product.purchasePackName || 'PAKET'
+      // FIX MET - CUMAN (1 BKS) DOANG, GA USAH 12 BATANG LAGI
       displayName = `${product.name} (${selectedPackage.name})`
-      if (selectedPackage.qty_pcs) {
-        displayName += ` ${selectedPackage.qty_pcs} ${product.unit || 'PCS'}`
-      }
     } else if (typeof selectedPackage === 'object' && selectedPackage.name) {
       finalUnit = selectedPackage.name
       displayName = `${product.name} (${selectedPackage.name})`
@@ -529,23 +850,21 @@ export function buildCartItem(product, selectedServices = [], finalPrice = null,
   }
 }
 
-const getServiceIds = (s) => {
-  if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
-  if (s.productId) return [s.productId]
-  return []
-}
-
 export function getServicesForProduct(product, allServices = []) {
   if (!product) return []
+  const list = allServices.filter(s => !s.deleted)
   const pCat = (product.category || '').toUpperCase()
 
-  const custom = allServices.filter(s => {
+  // 1. Cari yang khusus buat produk ini (support multi)
+  const custom = list.filter(s => {
     const ids = getServiceIds(s)
     return ids.length > 0 && ids.includes(product.id)
   })
-  if (custom.length > 0) return custom // KHUSUS = OVERRIDE
+  // Kalo ada khusus, CUMA khusus yang keluar, umum HILANG
+  if (custom.length > 0) return custom
 
-  return allServices.filter(s => {
+  // 2. Kalo ga ada khusus, baru umum yang ids nya kosong beneran
+  return list.filter(s => {
     const ids = getServiceIds(s)
     return ids.length === 0 && (s.category || '').toUpperCase() === pCat
   })
@@ -555,640 +874,6 @@ export function hasProductOptions(product, packages = [], services = []) {
   const hasLegacyPack = (product.packPrice || 0) > 0
   return packages.length > 0 || services.length > 0 || hasLegacyPack
 }
-===== src/router/index.js =====
-import { createRouter, createWebHistory } from 'vue-router'
-import Catalog from '../views/Catalog.vue'
-import Cart from '../views/Cart.vue'
-import Checkout from '../views/Checkout.vue'
-import CheckoutSuccess from '../views/CheckoutSuccess.vue'
-
-const routes = [
-  { path: '/', name: 'Catalog', component: Catalog },
-  { path: '/cart', name: 'Cart', component: Cart },
-  { path: '/checkout', name: 'Checkout', component: Checkout },
-  { path: '/checkout-success', name: 'CheckoutSuccess', component: CheckoutSuccess }
-]
-
-const router = createRouter({
-  history: createWebHistory(),
-  routes
-})
-
-export default router
-
-===== src/style.css =====
-@import "tailwindcss";
-===== src/db/repositories/productRepository.js =====
-import { db } from '../index.js'
-
-export const productRepo = {
-  getPublished: async () => {
-    const list = await db.products.where('isPublished').equals(1).toArray()
-    return list.filter(p => !p.deleted)
-  },
-  getById: async (id) => {
-    const item = await db.products.get(id)
-    return item && item.isPublished && !item.deleted ? item : null
-  },
-  getByCategory: async (category) => {
-    if (!category || category === 'SEMUA') return productRepo.getPublished()
-    const list = await db.products.where('category').equals(category).toArray()
-    return list.filter(p => p.isPublished && !p.deleted)
-  },
-  bulkSave: async (products) => {
-    if (!products.length) return
-    await db.transaction('rw', db.products, async () => {
-      for (const p of products) {
-        await db.products.put({ ...p, synced: 1 })
-      }
-    })
-  }
-}
-===== src/db/repositories/cartRepository.js =====
-import { db } from '../index.js'
-
-function toPlain(obj) {
-  // Paling aman buat IDB: JSON clone biar hilang semua Proxy & function
-  return JSON.parse(JSON.stringify(obj))
-}
-
-export const cartRepo = {
-  async getAll() {
-    return await db.cart.toArray()
-  },
-
-  async save(item) {
-    const plain = toPlain(item)
-    return await db.cart.put(plain)
-  },
-
-  async removeById(cartId) {
-    await db.cart.delete(cartId)
-  },
-
-  async updateQtyById(cartId, qty) {
-    const item = await db.cart.get(cartId)
-    if (item) {
-      item.qty = qty
-      item.updatedAt = new Date().toISOString()
-      await db.cart.put(toPlain(item))
-    }
-  },
-
-  async clear() {
-    await db.cart.clear()
-  }
-}
-===== src/db/index.js =====
-// src/db/index.js - FINAL CLEAN
-import Dexie from 'dexie'
-
-export const db = new Dexie('SinarPagiWebDB')
-
-db.version(1).stores({
-  products: 'id, name, category, isPublished, updatedAt, synced, deleted',
-  product_packages: 'id, productId, name',
-  services: 'id, name, category, *productIds, productId',
-  cart: 'id, productId, updatedAt',
-  settings: 'id, updatedAt'
-})
-
-export default db
-===== src/views/CheckoutSuccess.vue =====
-<script setup>
-import { CheckCircle, Home } from 'lucide-vue-next'
-import { useCartStore } from '../stores/cartStore'
-import { onMounted } from 'vue'
-
-const cartStore = useCartStore()
-
-onMounted(async () => {
-  await cartStore.clearCart()
-})
-</script>
-
-<template>
-  <div class="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl p-6 sm:p-8 shadow-sm border border-gray-100 max-w-md w-full text-center flex flex-col items-center gap-4">
-      <div class="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-2">
-        <CheckCircle :size="36" />
-      </div>
-      <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Pesanan Berhasil Dikirim!</h1>
-      <p class="text-sm text-gray-500 leading-relaxed">
-        Pesanan kamu sudah diteruskan via WhatsApp ke Warung Sinar Pagi. Admin kami akan segera memproses pesananmu.
-      </p>
-
-      <router-link to="/" class="mt-4 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-sm">
-        <Home :size="18" />
-        <span>Kembali ke Katalog</span>
-      </router-link>
-    </div>
-  </div>
-</template>
-
-===== src/views/Checkout.vue =====
-<script setup>
-import { ref, onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
-import { useCartStore } from '../stores/cartStore'
-import { qrisService } from '../services/qrisService'
-import { waService } from '../services/waService'
-import { compressImage, uploadBuktiBayar } from '../services/cloudinaryService'
-import { formatRupiah } from '../utils/formatters'
-import Modal from '../components/ui/Modal.vue'
-import { ArrowLeft, User, MapPin, QrCode, Banknote, ShieldCheck, Upload, CheckCircle, Loader2, Store, Bike, Download, Maximize2, X } from 'lucide-vue-next'
-
-const router = useRouter()
-const cartStore = useCartStore()
-
-const customerName = ref('')
-const customerAddress = ref('')
-const paymentMethod = ref('COD')
-const deliveryType = ref('pickup') // pickup | delivery
-
-const isPaymentModalOpen = ref(false)
-const isQrisFullscreen = ref(false)
-const qrisSettings = ref({ qrisUrl: '', merchantName: 'WARUNG SINAR PAGI', nmid: '' })
-const buktiFile = ref(null)
-const buktiUrl = ref('')
-const uploading = ref(false)
-const loadingCheckout = ref(false)
-
-const DELIVERY_FEE = 2000
-
-const deliveryFee = computed(() => deliveryType.value === 'delivery' ? DELIVERY_FEE : 0)
-const finalTotal = computed(() => cartStore.totalPrice + deliveryFee.value)
-
-onMounted(async () => {
-  await cartStore.loadCart()
-  const remote = await qrisService.fetchRemoteSettings()
-  if (remote) qrisSettings.value = remote
-})
-
-async function handleFileChange(event) {
-  const file = event.target.files[0]
-  if (!file) return
-  uploading.value = true
-  try {
-    const compressedBlob = await compressImage(file)
-    // INI KUNCINYA MET -> OTOMATIS MASUK FOLDER sinar-pagi/bukti-bayar
-    const res = await uploadBuktiBayar(compressedBlob)
-    buktiUrl.value = res.secure_url
-    buktiFile.value = file.name
-  } catch (err) {
-    console.error('Gagal upload bukti bayar:', err)
-    alert('Gagal mengunggah bukti pembayaran. Silakan coba lagi.')
-  } finally {
-    uploading.value = false
-  }
-}
-
-async function downloadQris() {
-  if (!qrisSettings.value.qrisUrl) return
-  try {
-    const res = await fetch(qrisSettings.value.qrisUrl)
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `QRIS-${qrisSettings.value.merchantName || 'SinarPagi'}.jpg`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  } catch {
-    window.open(qrisSettings.value.qrisUrl, '_blank')
-  }
-}
-
-async function handleCheckout() {
-  if (!customerName.value.trim()) {
-    alert('Mohon isi Nama terlebih dahulu!')
-    return
-  }
-  if (deliveryType.value === 'delivery' && !customerAddress.value.trim()) {
-    alert('Mohon isi Alamat lengkap untuk pengantaran!')
-    return
-  }
-  if (deliveryType.value === 'pickup' && !customerAddress.value.trim()) {
-    customerAddress.value = 'Ambil di Warung'
-  }
-  if (paymentMethod.value === 'QRIS' && !buktiUrl.value) {
-    alert('Mohon upload bukti pembayaran QRIS terlebih dahulu!')
-    return
-  }
-
-  loadingCheckout.value = true
-
-  waService.sendOrderToWhatsApp(
-    { 
-      name: customerName.value, 
-      address: customerAddress.value,
-      deliveryType: deliveryType.value,
-      deliveryFee: deliveryFee.value
-    },
-    cartStore.items,
-    finalTotal.value,
-    paymentMethod.value,
-    buktiUrl.value
-  )
-
-  setTimeout(() => {
-    loadingCheckout.value = false
-    router.push('/checkout-success')
-  }, 1000)
-}
-</script>
-
-<template>
-  <div class="min-h-screen bg-gray-50 pb-28">
-    <header class="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-gray-100 px-4 py-3 shadow-xs">
-      <div class="max-w-4xl mx-auto flex items-center gap-3">
-        <router-link to="/cart" class="p-2 text-gray-600 hover:bg-gray-100 rounded-xl transition">
-          <ArrowLeft :size="20" />
-        </router-link>
-        <h1 class="text-xl font-bold text-gray-900 tracking-tight">Checkout Pesanan</h1>
-      </div>
-    </header>
-
-    <main class="max-w-4xl mx-auto p-4 flex flex-col gap-4">
-      <!-- OPSI PENGAMBILAN -->
-      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-3">
-        <h2 class="font-bold text-gray-800 text-base">Opsi Pengambilan</h2>
-        <div class="grid grid-cols-2 gap-2">
-          <button 
-            @click="deliveryType = 'pickup'"
-            :class="['p-3.5 rounded-xl border flex flex-col items-start gap-1.5 transition text-left', deliveryType === 'pickup' ? 'border-zinc-900 bg-zinc-900 text-white shadow-md' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
-          >
-            <Store :size="20" :class="deliveryType === 'pickup' ? 'text-white' : 'text-zinc-900'" />
-            <div>
-              <p class="text-xs font-black uppercase">Ambil di Warung</p>
-              <p :class="['text-[11px]', deliveryType === 'pickup' ? 'text-zinc-300' : 'text-zinc-500']">Gratis • Tanpa ongkir</p>
-            </div>
-          </button>
-          <button 
-            @click="deliveryType = 'delivery'"
-            :class="['p-3.5 rounded-xl border flex flex-col items-start gap-1.5 transition text-left', deliveryType === 'delivery' ? 'border-amber-600 bg-amber-50 text-amber-900 shadow-md' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
-          >
-            <Bike :size="20" :class="deliveryType === 'delivery' ? 'text-amber-600' : 'text-zinc-900'" />
-            <div>
-              <p class="text-xs font-black uppercase">Diantar</p>
-              <p :class="['text-[11px] font-bold', deliveryType === 'delivery' ? 'text-amber-700' : 'text-zinc-500']">+ {{ formatRupiah(DELIVERY_FEE) }}</p>
-            </div>
-          </button>
-        </div>
-      </div>
-
-      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-4">
-        <h2 class="font-bold text-gray-800 text-base">Informasi Pemesan</h2>
-        
-        <div class="flex flex-col gap-1.5">
-          <label class="text-xs font-semibold text-gray-600 flex items-center gap-1">
-            <User :size="14" class="text-blue-600" /> Nama Lengkap *
-          </label>
-          <input
-            v-model="customerName"
-            type="text"
-            placeholder="Contoh: Bpk. Budi"
-            class="w-full px-4 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 outline-none"
-          />
-        </div>
-
-        <div class="flex flex-col gap-1.5">
-          <label class="text-xs font-semibold text-gray-600 flex items-center gap-1">
-            <MapPin :size="14" class="text-blue-600" /> 
-            {{ deliveryType === 'delivery' ? 'Alamat Lengkap *' : 'Catatan / Patokan (Opsional)' }}
-          </label>
-          <textarea
-            v-model="customerAddress"
-            rows="3"
-            :placeholder="deliveryType === 'delivery' ? 'Contoh: RT 02/05 Jl. Sinar Pagi No 10' : 'Contoh: Titip di warung sebelah / ambil jam 5 sore'"
-            class="w-full px-4 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 outline-none resize-none"
-          ></textarea>
-          <p v-if="deliveryType === 'pickup'" class="text-[10px] text-zinc-400">Kosongkan jika langsung ambil di warung</p>
-        </div>
-      </div>
-
-      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-4">
-        <div class="flex items-center justify-between">
-          <h2 class="font-bold text-gray-800 text-base">Metode Pembayaran</h2>
-          <button @click="isPaymentModalOpen = true" class="text-xs font-bold text-blue-600 hover:underline">
-            Ubah Metode
-          </button>
-        </div>
-
-        <div @click="isPaymentModalOpen = true" class="flex items-center justify-between p-3.5 bg-blue-50 border border-blue-100 rounded-xl cursor-pointer hover:bg-blue-100/50 transition">
-          <div class="flex items-center gap-3">
-            <div class="p-2 bg-blue-600 text-white rounded-xl">
-              <Banknote v-if="paymentMethod === 'COD'" :size="20" />
-              <QrCode v-else :size="20" />
-            </div>
-            <div>
-              <p class="font-bold text-gray-800 text-sm">
-                {{ paymentMethod === 'COD' ? 'Bayar di Tempat (COD)' : 'QRIS Instant' }}
-              </p>
-              <p class="text-xs text-gray-500">
-                {{ paymentMethod === 'COD' ? 'Bayar tunai saat barang diterima/diambil' : 'Scan QRIS nasional via e-wallet / m-banking' }}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="paymentMethod === 'QRIS'" class="flex flex-col gap-4 mt-2 pt-4 border-t border-gray-100">
-          <div class="bg-gray-50 p-4 rounded-2xl border border-gray-200 flex flex-col items-center text-center gap-3">
-            <div class="flex items-center gap-1.5 text-emerald-700 text-xs font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-              <ShieldCheck :size="14" /> Pastikan: {{ qrisSettings.merchantName }}
-            </div>
-            
-            <div @click="isQrisFullscreen = true" class="relative w-full max-w-[320px] bg-white rounded-2xl p-3 shadow-sm border border-gray-200 flex items-center justify-center cursor-zoom-in group overflow-hidden">
-              <img v-if="qrisSettings.qrisUrl" :src="qrisSettings.qrisUrl" alt="QRIS" class="w-full h-auto object-contain rounded-xl" />
-              <p v-else class="text-xs text-gray-400 py-10">QRIS belum diset oleh admin</p>
-              <div class="absolute top-2.5 right-2.5 p-1.5 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 group-active:opacity-100 transition">
-                <Maximize2 :size="16" />
-              </div>
-            </div>
-            
-            <p class="text-xs text-gray-500">Tap gambar untuk fullscreen • Scan dengan BCA, BRI, Dana, OVO, GoPay, dll.</p>
-
-            <button @click="downloadQris" class="w-full max-w-[320px] flex items-center justify-center gap-2 px-4 py-3 bg-zinc-900 text-white rounded-xl text-xs font-black active:scale-95 transition shadow-md hover:bg-black">
-              <Download :size="16" /> Download QRIS (Buat Bayar 1 HP)
-            </button>
-            <p class="text-[10px] text-zinc-400 max-w-[320px] leading-tight">Kalo cuma punya 1 HP: Download dulu, baru buka e-wallet > Bayar > Pilih dari Galeri / Upload QRIS</p>
-          </div>
-          <div class="flex flex-col gap-2">
-            <label class="text-xs font-semibold text-gray-600">Upload Bukti Pembayaran QRIS</label>
-            <label class="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl cursor-pointer text-sm font-medium transition border border-dashed border-gray-300">
-              <Upload :size="16" class="text-blue-600" />
-              <span>{{ buktiFile ? 'Ganti Bukti Bayar' : 'Pilih Foto Bukti Bayar' }}</span>
-              <input type="file" accept="image/*" @change="handleFileChange" class="hidden" />
-            </label>
-            <div v-if="uploading" class="flex items-center gap-2 text-xs text-blue-600 font-medium">
-              <Loader2 :size="14" class="animate-spin" /> Mengompres & mengunggah...
-            </div>
-            <div v-if="buktiUrl" class="flex items-center gap-2 text-xs text-emerald-600 font-medium bg-emerald-50 p-2.5 rounded-xl border border-emerald-100">
-              <CheckCircle :size="16" /> Bukti bayar berhasil diunggah!
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 space-y-2">
-        <h2 class="font-bold text-gray-800 text-sm mb-1">Rincian Biaya</h2>
-        <div class="flex justify-between text-xs text-zinc-600"><span>Subtotal ({{ cartStore.totalItems }} item)</span><span>{{ formatRupiah(cartStore.totalPrice) }}</span></div>
-        <div class="flex justify-between text-xs" :class="deliveryFee > 0 ? 'text-amber-600 font-bold' : 'text-zinc-400'">
-          <span>Ongkir ({{ deliveryType === 'delivery' ? 'Diantar' : 'Ambil di Warung' }})</span>
-          <span>{{ deliveryFee > 0 ? formatRupiah(deliveryFee) : 'Gratis' }}</span>
-        </div>
-        <div class="border-t border-dashed pt-2 flex justify-between font-black text-sm"><span>Total Tagihan</span><span class="text-blue-600">{{ formatRupiah(finalTotal) }}</span></div>
-      </div>
-    </main>
-
-    <footer class="fixed bottom-0 inset-x-0 bg-white border-t border-gray-100 p-4 shadow-lg z-30">
-      <div class="max-w-4xl mx-auto flex items-center justify-between gap-4">
-        <div>
-          <p class="text-xs text-gray-500">Total Tagihan</p>
-          <p class="text-lg font-extrabold text-blue-600">{{ formatRupiah(finalTotal) }}</p>
-          <p v-if="deliveryFee > 0" class="text-[10px] text-amber-600 font-bold">Termasuk ongkir {{ formatRupiah(deliveryFee) }}</p>
-        </div>
-        <button
-          @click="handleCheckout"
-          :disabled="loadingCheckout"
-          class="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition shadow-sm flex items-center gap-2 disabled:opacity-50"
-        >
-          <Loader2 v-if="loadingCheckout" :size="18" class="animate-spin" />
-          <span>Kirim Pesanan ke WA</span>
-        </button>
-      </div>
-    </footer>
-
-    <div v-if="isQrisFullscreen" @click="isQrisFullscreen = false" class="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-4">
-      <button @click="isQrisFullscreen = false" class="absolute top-4 right-4 p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition"><X :size="24" /></button>
-      <img :src="qrisSettings.qrisUrl" class="max-w-full max-h-[80vh] object-contain rounded-2xl bg-white p-2 shadow-2xl" @click.stop />
-      <button @click.stop="downloadQris" class="mt-6 px-6 py-3.5 bg-white text-zinc-900 rounded-full font-black text-xs flex items-center gap-2 shadow-xl active:scale-95"><Download :size="16" /> Download QRIS</button>
-    </div>
-
-    <Modal :isOpen="isPaymentModalOpen" title="Pilih Metode Pembayaran" @close="isPaymentModalOpen = false">
-      <div class="flex flex-col gap-2 py-2">
-        <button @click="paymentMethod = 'COD'; isPaymentModalOpen = false" class="flex items-center justify-between p-4 rounded-xl border transition text-left" :class="paymentMethod === 'COD' ? 'bg-blue-50 border-blue-200 text-blue-700 font-bold' : 'hover:bg-gray-50 border-gray-100 text-gray-800'">
-          <div class="flex items-center gap-3"><Banknote :size="20" class="text-blue-600" /><div><p class="text-sm font-bold">Bayar di Tempat (COD)</p><p class="text-xs text-gray-500 font-normal">Bayar tunai langsung saat barang diterima/diambil</p></div></div><span v-if="paymentMethod === 'COD'" class="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
-        </button>
-        <button @click="paymentMethod = 'QRIS'; isPaymentModalOpen = false" class="flex items-center justify-between p-4 rounded-xl border transition text-left" :class="paymentMethod === 'QRIS' ? 'bg-blue-50 border-blue-200 text-blue-700 font-bold' : 'hover:bg-gray-50 border-gray-100 text-gray-800'">
-          <div class="flex items-center gap-3"><QrCode :size="20" class="text-blue-600" /><div><p class="text-sm font-bold">QRIS Instant</p><p class="text-xs text-gray-500 font-normal">Scan QRIS nasional via e-wallet / m-banking</p></div></div><span v-if="paymentMethod === 'QRIS'" class="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
-        </button>
-      </div>
-    </Modal>
-  </div>
-</template>
-===== src/views/Catalog.vue =====
-<script setup>
-import { ref, onMounted, computed } from 'vue'
-import { useProductStore } from '../stores/productStore'
-import { useCartStore } from '../stores/cartStore'
-import { getThumbUrl } from '../services/cloudinaryService'
-import { formatRupiah } from '../utils/formatters'
-import { buildCartItem } from '../utils/productHelper'
-import { db } from '../db/index.js'
-import { Search, Package, Plus, AlertTriangle, ShoppingCart, ArrowRight, X, Flame } from 'lucide-vue-next'
-
-const productStore = useProductStore()
-const cartStore = useCartStore()
-
-const showModal = ref(false)
-const activeProduct = ref(null)
-const selectedPackage = ref(null)
-const selectedServices = ref([])
-
-const productPackages = ref([])
-const availableServices = ref([])
-
-onMounted(async () => {
-  await productStore.loadProducts()
-  await cartStore.loadCart()
-})
-
-async function openProductOptions(product) {
-  let pkgs = []
-  let services = []
-
-  try {
-  const allPkgs = await db.product_packages.where('productId').equals(product.id).toArray()
-  pkgs = allPkgs.filter(p => {
-    const name = (p.name || '').toUpperCase()
-    const isBelanjaBesar = ['RENCENG', 'RENCENGAN', 'DUS', 'KARDUS'].some(bad => name.includes(bad))
-    const isSatuBatang = (p.qty_pcs || 0) === 1 // HIDE DI WEB AJA
-    return !isBelanjaBesar && !isSatuBatang
-  })
-} catch { pkgs = [] }
-
-  try {
-    const allServices = await db.services.toArray()
-    // FIX ANTI BOCOR
-    const getIds = (s) => {
-      if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
-      if (s.productId) return [s.productId]
-      return []
-    }
-    
-    const custom = allServices.filter(s => getIds(s).includes(product.id))
-    if (custom.length > 0) {
-      services = custom
-    } else {
-      const cat = (product.category || '').toUpperCase()
-      services = allServices.filter(s => {
-        const ids = getIds(s)
-        return ids.length === 0 && (s.category || '').toUpperCase() === cat
-      })
-    }
-  } catch { services = [] }
-
-  const hasOptions = pkgs.length > 0 || services.length > 0
-
-  if (!hasOptions) {
-    const itemToAdd = buildCartItem(product, [], product.price_sell, null)
-    cartStore.addToCart(itemToAdd, 1)
-    return
-  }
-
-  activeProduct.value = product
-  selectedPackage.value = null
-  selectedServices.value = []
-  productPackages.value = pkgs
-  availableServices.value = services
-  showModal.value = true
-}
-
-const totalPrice = computed(() => {
-  if (!activeProduct.value) return 0
-  let price = activeProduct.value.price_sell
-  if (selectedPackage.value) {
-    price = selectedPackage.value.price_sell
-  }
-  for (const svc of selectedServices.value) {
-    price += Number(svc.price) || 0
-  }
-  return price
-})
-
-function toggleService(svc) {
-  const idx = selectedServices.value.findIndex(s => s.id === svc.id)
-  if (idx >= 0) selectedServices.value.splice(idx, 1)
-  else selectedServices.value.push(svc)
-}
-
-function addToCartWithOptions() {
-  if (!activeProduct.value) return
-  const itemToAdd = buildCartItem(activeProduct.value, selectedServices.value, totalPrice.value, selectedPackage.value)
-  cartStore.addToCart(itemToAdd, 1)
-  showModal.value = false
-  activeProduct.value = null
-}
-</script>
-
-<template>
-  <div class="min-h-screen bg-gray-50 pb-28">
-    <header class="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-gray-100 px-4 py-3 shadow-xs">
-      <div class="max-w-4xl mx-auto flex flex-col gap-3">
-        <div class="flex items-center justify-between">
-          <h1 class="text-xl font-bold text-gray-900 tracking-tight">Warung Sinar Pagi</h1>
-          <router-link to="/cart" class="relative p-2.5 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition">
-            <ShoppingCart :size="20" />
-            <span v-if="cartStore.totalItems > 0" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold shadow-xs">{{ cartStore.totalItems }}</span>
-          </router-link>
-        </div>
-        <div class="relative w-full">
-  <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Search :size="18" /></span>
-  <input 
-    v-model="productStore.searchQuery" 
-    type="text" 
-    placeholder="Cari barang di warung..." 
-    class="w-full pl-10 pr-10 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 placeholder-gray-400 outline-none transition" 
-  />
-  <!-- Tombol X buat clear -->
-  <button 
-    v-if="productStore.searchQuery" 
-    @click="productStore.searchQuery = ''"
-    class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 active:scale-90 transition"
-  >
-    <X :size="18" />
-  </button>
-</div>
-        <div class="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-          <button v-for="cat in productStore.categories" :key="cat" @click="productStore.selectedCategory = cat" :class="['px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition shrink-0', productStore.selectedCategory === cat ? 'bg-blue-600 text-white shadow-xs' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">{{ cat }}</button>
-        </div>
-      </div>
-    </header>
-
-    <main class="max-w-4xl mx-auto p-4">
-      <div v-if="productStore.loading" class="flex justify-center items-center py-20"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div></div>
-      <div v-else-if="productStore.filteredProducts.length === 0" class="text-center py-20"><Package :size="48" class="mx-auto text-gray-300 mb-2" /><p class="text-gray-500 font-medium">Produk tidak ditemukan</p></div>
-      <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
-        <div v-for="product in productStore.filteredProducts" :key="product.id" @click="openProductOptions(product)" class="bg-white rounded-2xl p-3 shadow-xs border border-gray-100 flex flex-col justify-between hover:shadow-md transition cursor-pointer group">
-          <div>
-            <div class="relative w-full aspect-square bg-gray-100 rounded-xl overflow-hidden mb-3">
-              <img v-if="product.imageUrl" :src="getThumbUrl(product.imageUrl, 300)" :alt="product.name" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
-              <div v-else class="w-full h-full flex items-center justify-center text-gray-400"><Package :size="32" /></div>
-              <span class="absolute top-2 left-2 bg-black/60 backdrop-blur-xs text-white text-[10px] px-2 py-0.5 rounded-md font-medium">{{ product.category || 'UMUM' }}</span>
-            </div>
-            <h2 class="font-semibold text-gray-800 text-sm line-clamp-2 mb-1">{{ product.name }}</h2>
-            <p class="text-blue-600 font-bold text-sm">{{ formatRupiah(product.price_sell) }}</p>
-          </div>
-          <div class="mt-3 pt-2 border-t border-gray-50 flex items-center justify-between">
-            <span class="text-[11px] text-gray-400 flex items-center gap-1"><AlertTriangle v-if="product.qty <= 2" :size="12" class="text-amber-500" />Stok: {{ product.qty }}</span>
-            <span class="p-2 bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white rounded-xl transition"><Plus :size="16" /></span>
-          </div>
-        </div>
-      </div>
-    </main>
-
-    <div v-if="showModal && activeProduct" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div class="w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-3xl p-6 shadow-2xl max-h-[85vh] overflow-auto">
-        <div class="flex justify-between items-center mb-4">
-          <h3 class="font-black text-base text-zinc-900">Pilih Opsi</h3>
-          <button @click="showModal = false" class="p-2 bg-zinc-100 rounded-xl text-zinc-500 hover:bg-zinc-200"><X :size="18"/></button>
-        </div>
-
-        <div class="flex gap-3 mb-5 items-center bg-zinc-50 p-3 rounded-2xl border">
-          <div class="w-16 h-16 rounded-xl overflow-hidden bg-white shrink-0"><img v-if="activeProduct.imageUrl" :src="getThumbUrl(activeProduct.imageUrl, 200)" class="w-full h-full object-cover" /><div v-else class="w-full h-full flex items-center justify-center text-zinc-300"><Package :size="24"/></div></div>
-          <div><h4 class="font-bold text-sm text-zinc-900 line-clamp-2">{{ activeProduct.name }}</h4><p class="text-xs text-zinc-500 mt-0.5">Stok: {{ activeProduct.qty }} {{ activeProduct.unit || 'PCS' }} • {{ activeProduct.category }}</p></div>
-        </div>
-
-        <div v-if="productPackages.length > 0" class="space-y-2 mb-4">
-          <label class="text-[10px] font-bold uppercase text-zinc-400">Pilih Paket</label>
-          <button @click="selectedPackage = null" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition', !selectedPackage ? 'border-blue-600 bg-blue-50/50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-800']">
-            <div class="text-left"><p class="text-xs font-bold uppercase">Eceran / Per {{ activeProduct.unit || 'PCS' }}</p><p class="text-sm font-black text-blue-600">{{ formatRupiah(activeProduct.price_sell) }}</p></div>
-            <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', !selectedPackage ? 'border-blue-600 bg-blue-600 text-white' : 'border-zinc-300']"><div v-if="!selectedPackage" class="w-2 h-2 bg-white rounded-full"></div></div>
-          </button>
-          <button v-for="pkg in productPackages" :key="pkg.id" @click="selectedPackage = pkg" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-50/50 text-emerald-900' : 'border-zinc-200 bg-white text-zinc-800']">
-            <div class="text-left"><p class="text-xs font-bold uppercase">{{ pkg.name }} ({{ pkg.qty_pcs }} {{ activeProduct.unit || 'PCS' }})</p><p class="text-sm font-black text-emerald-600">{{ formatRupiah(pkg.price_sell) }}</p></div>
-            <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-zinc-300']"><div v-if="selectedPackage?.id === pkg.id" class="w-2 h-2 bg-white rounded-full"></div></div>
-          </button>
-        </div>
-
-        <div v-if="availableServices.length > 0" class="mb-6 space-y-2">
-          <label class="text-[10px] font-bold uppercase text-zinc-400">Opsi Penyajian ({{ activeProduct.category }})</label>
-          <label v-for="svc in availableServices" :key="svc.id" @click="toggleService(svc)" :class="['w-full p-3.5 rounded-2xl border flex items-center gap-3 cursor-pointer transition', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-50/50 text-amber-900' : 'border-zinc-200 bg-white text-zinc-700']">
-            <div :class="['w-5 h-5 rounded-lg border flex items-center justify-center transition', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-500 text-white' : 'border-zinc-300']"><Flame v-if="selectedServices.find(s => s.id === svc.id)" :size="14" /></div>
-            <div class="flex-1 flex justify-between items-center"><div><p class="text-xs font-bold uppercase">{{ svc.name }}</p><p class="text-[10px] text-zinc-500">Kategori {{ svc.category }}</p></div><p class="text-xs font-black text-amber-600">+ {{ formatRupiah(svc.price) }}</p></div>
-          </label>
-        </div>
-
-        <div class="bg-zinc-900 text-white p-4 rounded-2xl flex justify-between items-center mb-4"><span class="text-xs font-bold">Total</span><span class="text-lg font-black">{{ formatRupiah(totalPrice) }}</span></div>
-
-        <button @click="addToCartWithOptions" class="w-full bg-zinc-900 hover:bg-zinc-800 text-white py-4 rounded-2xl font-black text-sm active:scale-95 transition shadow-lg">Masukkan ke Keranjang</button>
-      </div>
-    </div>
-
-    <transition enter-active-class="transition duration-300 ease-out" enter-from-class="translate-y-full opacity-0" enter-to-class="translate-y-0 opacity-100" leave-active-class="transition duration-200 ease-in" leave-from-class="translate-y-0 opacity-100" leave-to-class="translate-y-full opacity-0">
-      <div v-if="cartStore.totalItems > 0" class="fixed bottom-4 left-4 right-4 z-40 max-w-xl mx-auto">
-        <div class="bg-zinc-900 text-white px-5 py-3.5 rounded-2xl shadow-xl flex items-center justify-between border border-zinc-800">
-          <div class="flex items-center gap-3"><div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center font-bold">{{ cartStore.totalItems }}</div><div><p class="text-[11px] text-zinc-400 uppercase font-semibold">Total Belanja</p><p class="text-sm font-black">{{ formatRupiah(cartStore.totalPrice) }}</p></div></div>
-          <router-link to="/cart" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition active:scale-95 shadow-md"><span>Lihat Keranjang</span><ArrowRight :size="16" /></router-link>
-        </div>
-      </div>
-    </transition>
-  </div>
-</template>
-
 ===== src/views/Cart.vue =====
 <script setup>
 import { onMounted } from 'vue'
@@ -1279,26 +964,621 @@ onMounted(async () => {
   </div>
 </template>
 
-===== src/main.js =====
-import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import App from './App.vue'
-import router from './router'
-import './style.css'
-
-const app = createApp(App)
-
-app.use(createPinia())
-app.use(router)
-
-app.mount('#app')
-
-===== src/App.vue =====
+===== src/views/Catalog.vue =====
 <script setup>
-// Root Component Warung Sinar Pagi Web
+import { ref, onMounted, computed } from 'vue'
+import { useProductStore } from '../stores/productStore'
+import { useCartStore } from '../stores/cartStore'
+import { getThumbUrl } from '../services/cloudinaryService'
+import { formatRupiah } from '../utils/formatters'
+import { buildCartItem } from '../utils/productHelper'
+import { db } from '../db/index.js'
+import { PINNED_CATEGORIES, VISIBLE_COUNT } from '../config/catalogCategory.js'
+import { Search, Package, Plus, AlertTriangle, ShoppingCart, ArrowRight, X } from 'lucide-vue-next'
+
+const productStore = useProductStore()
+const cartStore = useCartStore()
+
+const showModal = ref(false)
+const activeProduct = ref(null)
+const selectedPackage = ref(null)
+const selectedServices = ref([])
+const productPackages = ref([])
+const availableServices = ref([])
+
+const showCategorySheet = ref(false)
+const categorySearch = ref('')
+
+onMounted(async () => {
+  await productStore.loadProducts()
+  await cartStore.loadCart()
+})
+
+// AMBIL PINNED DARI LOCALSTORAGE DULU, KALO GA ADA BARU DARI CONFIG FILE
+function getPinnedCategories() {
+  try {
+    const fromLS = JSON.parse(localStorage.getItem('sinar_pagi_pinned_categories') || 'null')
+    if (fromLS && Array.isArray(fromLS) && fromLS.length > 0) return fromLS
+  } catch {}
+  return PINNED_CATEGORIES
+}
+
+const popularCategories = computed(() => {
+  const all = productStore.categories || []
+  const catsOnly = all.filter(c => c !== 'SEMUA' && c.toUpperCase() !== 'SEMUA')
+  const pinned = getPinnedCategories()
+
+  // KALO PINNED ADA ISINYA, PAKE PINNED SESUAI URUTAN LU
+  if (pinned && pinned.length > 0) {
+    // filter biar cuma yang beneran ada di DB
+    const valid = pinned.filter(p => catsOnly.includes(p))
+    if (valid.length > 0) return valid.slice(0, VISIBLE_COUNT)
+  }
+
+  // KALO PINNED KOSONG, FALLBACK AUTO PALING LARIS (JUMLAH PRODUK TERBANYAK)
+  const counts = {}
+  const products = productStore.products || []
+  if (products.length === 0) {
+    return catsOnly.sort((a,b) => a.localeCompare(b)).slice(0, VISIBLE_COUNT)
+  }
+  products.forEach(p => {
+    const cat = p.category || 'UMUM'
+    counts[cat] = (counts[cat] || 0) + 1
+  })
+  return catsOnly.sort((a,b) => (counts[b]||0) - (counts[a]||0)).slice(0, VISIBLE_COUNT)
+})
+
+const visibleCategories = computed(() => {
+  const semua = 'SEMUA'
+  return [semua, ...popularCategories.value]
+})
+
+const remainingCategories = computed(() => {
+  const all = productStore.categories || []
+  const visibleSet = new Set(visibleCategories.value)
+  return all.filter(c => !visibleSet.has(c))
+})
+
+const filteredSheetCategories = computed(() => {
+  const all = productStore.categories || []
+  const list = all.filter(c => c.toUpperCase() !== 'SEMUA')
+  if (!categorySearch.value) return list.sort((a,b) => a.localeCompare(b))
+  return list.filter(c => c.toLowerCase().includes(categorySearch.value.toLowerCase())).sort((a,b) => a.localeCompare(b))
+})
+
+function selectCategory(cat) {
+  productStore.selectedCategory = cat
+  showCategorySheet.value = false
+}
+
+async function openProductOptions(product) {
+  let pkgs = []
+  let services = []
+  try {
+    const allPkgs = await db.product_packages.where('productId').equals(product.id).toArray()
+    pkgs = allPkgs.filter(p => !p.deleted).filter(p => {
+      const name = (p.name || '').toUpperCase()
+      const isBelanjaBesar = ['RENCENG','RENCENGAN','DUS','KARDUS'].some(bad => name.includes(bad))
+      const isSatuBatang = (p.qty_pcs || 0) === 1
+      return !isBelanjaBesar && !isSatuBatang
+    }).sort((a,b) => (a.order ?? 999) - (b.order ?? 999))
+  } catch { pkgs = [] }
+  try {
+    const allServices = (await db.services.toArray()).filter(s => !s.deleted)
+    const getIds = (s) => {
+      if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
+      if (s.productId) return [s.productId]
+      return []
+    }
+    const custom = allServices.filter(s => getIds(s).includes(product.id))
+    if (custom.length > 0) services = custom
+    else {
+      const cat = (product.category || '').toUpperCase()
+      services = allServices.filter(s => { const ids = getIds(s); return ids.length === 0 && (s.category || '').toUpperCase() === cat })
+    }
+  } catch { services = [] }
+  const hasOptions = pkgs.length > 0 || services.length > 0
+  if (!hasOptions) {
+    const itemToAdd = buildCartItem(product, [], product.price_sell, null)
+    cartStore.addToCart(itemToAdd, 1)
+    return
+  }
+  activeProduct.value = product
+  selectedPackage.value = null
+  selectedServices.value = []
+  productPackages.value = pkgs
+  availableServices.value = services
+  showModal.value = true
+}
+
+const totalPrice = computed(() => {
+  if (!activeProduct.value) return 0
+  let price = activeProduct.value.price_sell
+  if (selectedPackage.value) price = selectedPackage.value.price_sell
+  for (const svc of selectedServices.value) price += Number(svc.price) || 0
+  return price
+})
+
+function toggleService(svc) {
+  const exists = selectedServices.value.find(s => s.id === svc.id)
+  if (exists) selectedServices.value = []
+  else selectedServices.value = [svc]
+}
+
+function addToCartWithOptions() {
+  if (!activeProduct.value) return
+  const itemToAdd = buildCartItem(activeProduct.value, selectedServices.value, totalPrice.value, selectedPackage.value)
+  cartStore.addToCart(itemToAdd, 1)
+  showModal.value = false
+  activeProduct.value = null
+}
+
+// BUAT DEBUG GONTA-GANTI CEPAT DI CONSOLE
+window.setPinnedCategories = (arr) => {
+  localStorage.setItem('sinar_pagi_pinned_categories', JSON.stringify(arr))
+  location.reload()
+}
+window.clearPinnedCategories = () => {
+  localStorage.removeItem('sinar_pagi_pinned_categories')
+  location.reload()
+}
 </script>
 
 <template>
-  <router-view />
+  <div class="min-h-screen bg-gray-50 pb-28">
+    <header class="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-gray-100 px-4 py-3 shadow-xs">
+      <div class="max-w-4xl mx-auto flex flex-col gap-3">
+        <div class="flex items-center justify-between">
+          <h1 class="text-xl font-bold text-gray-900 tracking-tight">Warung Sinar Pagi</h1>
+          <router-link to="/cart" class="relative p-2.5 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition">
+            <ShoppingCart :size="20" />
+            <span v-if="cartStore.totalItems > 0" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-5 h-5 flex items-center justify-center rounded-full font-bold shadow-xs">{{ cartStore.totalItems }}</span>
+          </router-link>
+        </div>
+        <div class="relative w-full">
+          <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Search :size="18" /></span>
+          <input v-model="productStore.searchQuery" type="text" placeholder="Cari barang di warung..." class="w-full pl-10 pr-10 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 placeholder-gray-400 outline-none transition" />
+          <button v-if="productStore.searchQuery" @click="productStore.searchQuery = ''" class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 active:scale-90 transition"><X :size="18" /></button>
+        </div>
+        <!-- CHIP CUMA 4 + LAINNYA - URUTAN BISA DIATUR -->
+        <div class="flex gap-2 overflow-x-auto pb-1 no-scrollbar items-center">
+          <button v-for="cat in visibleCategories" :key="cat" @click="productStore.selectedCategory = cat" :class="['px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition shrink-0', productStore.selectedCategory === cat ? 'bg-blue-600 text-white shadow-xs' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">{{ cat }}</button>
+          <button v-if="remainingCategories.length > 0" @click="showCategorySheet=true" :class="['px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition shrink-0 border border-dashed', productStore.categories.some(c => remainingCategories.includes(c) && c === productStore.selectedCategory) ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-600 border-zinc-300']">Lainnya ({{ remainingCategories.length }})</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-4xl mx-auto p-4">
+      <div v-if="productStore.loading" class="flex justify-center items-center py-20"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div></div>
+      <div v-else-if="productStore.filteredProducts.length === 0" class="text-center py-20"><Package :size="48" class="mx-auto text-gray-300 mb-2" /><p class="text-gray-500 font-medium">Produk tidak ditemukan</p></div>
+      <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
+        <div v-for="product in productStore.filteredProducts" :key="product.id" @click="openProductOptions(product)" class="bg-white rounded-2xl p-3 shadow-xs border border-gray-100 flex flex-col justify-between hover:shadow-md transition cursor-pointer group">
+          <div>
+            <div class="relative w-full aspect-square bg-gray-100 rounded-xl overflow-hidden mb-3">
+              <img v-if="product.imageUrl" :src="getThumbUrl(product.imageUrl, 300)" :alt="product.name" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+              <div v-else class="w-full h-full flex items-center justify-center text-gray-400"><Package :size="32" /></div>
+              <span class="absolute top-2 left-2 bg-black/60 backdrop-blur-xs text-white text-[10px] px-2 py-0.5 rounded-md font-medium">{{ product.category || 'UMUM' }}</span>
+            </div>
+            <h2 class="font-semibold text-gray-800 text-sm line-clamp-2 mb-1">{{ product.name }}</h2>
+            <p class="text-blue-600 font-bold text-sm">{{ formatRupiah(product.price_sell) }}</p>
+          </div>
+          <div class="mt-3 pt-2 border-t border-gray-50 flex items-center justify-between">
+            <span class="text-[11px] text-gray-400 flex items-center gap-1"><AlertTriangle v-if="product.qty <= 2" :size="12" class="text-amber-500" />Stok: {{ product.qty }}</span>
+            <span class="p-2 bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white rounded-xl transition"><Plus :size="16" /></span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div v-if="showModal && activeProduct" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div class="w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-3xl p-6 shadow-2xl max-h-[85vh] overflow-auto">
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="font-black text-base text-zinc-900">Pilih Opsi</h3>
+          <button @click="showModal = false" class="p-2 bg-zinc-100 rounded-xl text-zinc-500 hover:bg-zinc-200"><X :size="18"/></button>
+        </div>
+        <div class="flex gap-3 mb-5 items-center bg-zinc-50 p-3 rounded-2xl border">
+          <div class="w-16 h-16 rounded-xl overflow-hidden bg-white shrink-0"><img v-if="activeProduct.imageUrl" :src="getThumbUrl(activeProduct.imageUrl, 200)" class="w-full h-full object-cover" /><div v-else class="w-full h-full flex items-center justify-center text-zinc-300"><Package :size="24"/></div></div>
+          <div><h4 class="font-bold text-sm text-zinc-900 line-clamp-2">{{ activeProduct.name }}</h4><p class="text-xs text-zinc-500 mt-0.5">Stok: {{ activeProduct.qty }} {{ activeProduct.unit || 'PCS' }} • {{ activeProduct.category }}</p></div>
+        </div>
+        <div v-if="productPackages.length > 0" class="space-y-2 mb-4">
+          <label class="text-[10px] font-bold uppercase text-zinc-400">Pilih Paket (urut sesuai kasir)</label>
+          <button @click="selectedPackage = null" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition', !selectedPackage ? 'border-blue-600 bg-blue-50/50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-800']">
+            <div class="text-left"><p class="text-xs font-bold uppercase">Eceran / Per {{ activeProduct.unit || 'PCS' }}</p><p class="text-sm font-black text-blue-600">{{ formatRupiah(activeProduct.price_sell) }}</p></div>
+            <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', !selectedPackage ? 'border-blue-600 bg-blue-600 text-white' : 'border-zinc-300']"><div v-if="!selectedPackage" class="w-2 h-2 bg-white rounded-full"></div></div>
+          </button>
+          <button v-for="pkg in productPackages" :key="pkg.id" @click="selectedPackage = pkg" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-50/50 text-emerald-900' : 'border-zinc-200 bg-white text-zinc-800']">
+            <div class="text-left"><p class="text-xs font-bold uppercase">{{ pkg.name }} ({{ pkg.qty_pcs }} {{ activeProduct.unit || 'PCS' }})</p><p class="text-sm font-black text-emerald-600">{{ formatRupiah(pkg.price_sell) }}</p></div>
+            <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-zinc-300']"><div v-if="selectedPackage?.id === pkg.id" class="w-2 h-2 bg-white rounded-full"></div></div>
+          </button>
+        </div>
+        <div v-if="availableServices.length > 0" class="mb-6 space-y-2">
+          <label class="text-[10px] font-bold uppercase text-zinc-400">Opsi Penyajian (Pilih 1) - {{ activeProduct.category }}</label>
+          <button v-for="svc in availableServices" :key="svc.id" @click="toggleService(svc)" :class="['w-full p-3.5 rounded-2xl border flex items-center gap-3 transition text-left', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-50/50 text-amber-900' : 'border-zinc-200 bg-white text-zinc-700']">
+            <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-500' : 'border-zinc-300']"><div v-if="selectedServices.find(s => s.id === svc.id)" class="w-2 h-2 bg-white rounded-full"></div></div>
+            <div class="flex-1 flex justify-between items-center"><div><p class="text-xs font-bold uppercase">{{ svc.name }}</p><p class="text-[10px] text-zinc-500">Kategori {{ svc.category }}</p></div><p class="text-xs font-black text-amber-600">+ {{ formatRupiah(svc.price) }}</p></div>
+          </button>
+        </div>
+        <div class="bg-zinc-900 text-white p-4 rounded-2xl flex justify-between items-center mb-4"><span class="text-xs font-bold">Total</span><span class="text-lg font-black">{{ formatRupiah(totalPrice) }}</span></div>
+        <button @click="addToCartWithOptions" class="w-full bg-zinc-900 hover:bg-zinc-800 text-white py-4 rounded-2xl font-black text-sm active:scale-95 transition shadow-lg">Masukkan ke Keranjang</button>
+      </div>
+    </div>
+
+    <div v-if="showCategorySheet" class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div class="w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-3xl p-5 pb-8 shadow-2xl max-h-[80vh] flex flex-col">
+        <div class="w-10 h-1 bg-zinc-200 rounded-full mx-auto mb-4"></div>
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="font-black text-base text-zinc-900">Pilih Kategori</h3>
+          <button @click="showCategorySheet=false" class="p-2 bg-zinc-100 rounded-xl"><X :size="18"/></button>
+        </div>
+        <div class="relative mb-4">
+          <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400"/>
+          <input v-model="categorySearch" placeholder="Cari kategori..." class="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-zinc-900"/>
+        </div>
+        <div class="overflow-auto flex-1 space-y-2 pr-1">
+          <button v-for="cat in filteredSheetCategories" :key="cat" @click="selectCategory(cat)" :class="['w-full text-left px-4 py-3.5 rounded-2xl border flex justify-between items-center transition', productStore.selectedCategory === cat ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-zinc-200 text-zinc-700']">
+            <span class="text-sm font-bold">{{ cat }}</span><span v-if="productStore.selectedCategory === cat" class="text-xs">✓</span>
+          </button>
+        </div>
+        <button @click="showCategorySheet=false" class="w-full mt-4 bg-zinc-900 text-white py-4 rounded-2xl font-black text-sm">Tutup</button>
+      </div>
+    </div>
+
+    <transition enter-active-class="transition duration-300 ease-out" enter-from-class="translate-y-full opacity-0" enter-to-class="translate-y-0 opacity-100" leave-active-class="transition duration-200 ease-in" leave-from-class="translate-y-0 opacity-100" leave-to-class="translate-y-full opacity-0">
+      <div v-if="cartStore.totalItems > 0" class="fixed bottom-4 left-4 right-4 z-40 max-w-xl mx-auto">
+        <div class="bg-zinc-900 text-white px-5 py-3.5 rounded-2xl shadow-xl flex items-center justify-between border border-zinc-800">
+          <div class="flex items-center gap-3"><div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center font-bold">{{ cartStore.totalItems }}</div><div><p class="text-[11px] text-zinc-400 uppercase font-semibold">Total Belanja</p><p class="text-sm font-black">{{ formatRupiah(cartStore.totalPrice) }}</p></div></div>
+          <router-link to="/cart" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition active:scale-95 shadow-md"><span>Lihat Keranjang</span><ArrowRight :size="16" /></router-link>
+        </div>
+      </div>
+    </transition>
+  </div>
+</template>
+===== src/views/Checkout.vue =====
+<script setup>
+import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
+import { useCartStore } from '../stores/cartStore'
+import { qrisService } from '../services/qrisService'
+import { waService } from '../services/waService'
+import { compressImage, uploadBuktiBayar } from '../services/cloudinaryService'
+import { formatRupiah } from '../utils/formatters'
+import { ArrowLeft, User, MapPin, QrCode, Banknote, ShieldCheck, Upload, CheckCircle, Loader2, Store, Bike, Download, Maximize2, X, StickyNote } from 'lucide-vue-next'
+
+const router = useRouter()
+const cartStore = useCartStore()
+
+const customerName = ref('')
+const customerAddress = ref('') // Alamat / Patokan WAJIB
+const customerNotes = ref('') // Catatan / Notes OPSIONAL
+const paymentMethod = ref('COD')
+const deliveryType = ref('pickup') // pickup | delivery
+
+const isQrisFullscreen = ref(false)
+const qrisSettings = ref({ qrisUrl: '', merchantName: 'WARUNG SINAR PAGI', nmid: '' })
+const buktiFile = ref(null)
+const buktiUrl = ref('')
+const uploading = ref(false)
+const loadingCheckout = ref(false)
+
+const DELIVERY_FEE = 2000
+
+const deliveryFee = computed(() => deliveryType.value === 'delivery' ? DELIVERY_FEE : 0)
+const finalTotal = computed(() => cartStore.totalPrice + deliveryFee.value)
+
+onMounted(async () => {
+  await cartStore.loadCart()
+  const remote = await qrisService.fetchRemoteSettings()
+  if (remote) qrisSettings.value = remote
+})
+
+async function handleFileChange(event) {
+  const file = event.target.files[0]
+  if (!file) return
+  uploading.value = true
+  try {
+    const compressedBlob = await compressImage(file)
+    // INI KUNCINYA MET -> OTOMATIS MASUK FOLDER sinar-pagi/bukti-bayar
+    const res = await uploadBuktiBayar(compressedBlob)
+    buktiUrl.value = res.secure_url
+    buktiFile.value = file.name
+  } catch (err) {
+    console.error('Gagal upload bukti bayar:', err)
+    alert('Gagal mengunggah bukti pembayaran. Silakan coba lagi.')
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function downloadQris() {
+  if (!qrisSettings.value.qrisUrl) return
+  try {
+    const res = await fetch(qrisSettings.value.qrisUrl)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `QRIS-${qrisSettings.value.merchantName || 'SinarPagi'}.jpg`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch {
+    window.open(qrisSettings.value.qrisUrl, '_blank')
+  }
+}
+
+async function handleCheckout() {
+  if (!customerName.value.trim()) {
+    alert('Mohon isi Nama Lengkap terlebih dahulu!')
+    return
+  }
+  if (!customerAddress.value.trim()) {
+    alert('Mohon isi Alamat / Patokan terlebih dahulu!')
+    return
+  }
+  if (paymentMethod.value === 'QRIS' && !buktiUrl.value) {
+    alert('Mohon upload bukti pembayaran QRIS terlebih dahulu!')
+    return
+  }
+
+  loadingCheckout.value = true
+
+  waService.sendOrderToWhatsApp(
+    { 
+      name: customerName.value, 
+      address: customerAddress.value,
+      notes: customerNotes.value,
+      deliveryType: deliveryType.value,
+      deliveryFee: deliveryFee.value
+    },
+    cartStore.items,
+    finalTotal.value,
+    paymentMethod.value,
+    buktiUrl.value
+  )
+
+  setTimeout(() => {
+    loadingCheckout.value = false
+    router.push('/checkout-success')
+  }, 1000)
+}
+</script>
+
+<template>
+  <div class="min-h-screen bg-gray-50 pb-28">
+    <header class="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-gray-100 px-4 py-3 shadow-xs">
+      <div class="max-w-4xl mx-auto flex items-center gap-3">
+        <router-link to="/cart" class="p-2 text-gray-600 hover:bg-gray-100 rounded-xl transition">
+          <ArrowLeft :size="20" />
+        </router-link>
+        <h1 class="text-xl font-bold text-gray-900 tracking-tight">Checkout Pesanan</h1>
+      </div>
+    </header>
+
+    <main class="max-w-4xl mx-auto p-4 flex flex-col gap-4">
+      <!-- OPSI PENGAMBILAN -->
+      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-3">
+        <h2 class="font-bold text-gray-800 text-base">Opsi Pengambilan</h2>
+        <div class="grid grid-cols-2 gap-2">
+          <button 
+            @click="deliveryType = 'pickup'"
+            :class="['p-3.5 rounded-xl border flex flex-col items-start gap-1.5 transition text-left', deliveryType === 'pickup' ? 'border-zinc-900 bg-zinc-900 text-white shadow-md' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
+          >
+            <Store :size="20" :class="deliveryType === 'pickup' ? 'text-white' : 'text-zinc-900'" />
+            <div>
+              <p class="text-xs font-black uppercase">Ambil di Warung</p>
+              <p :class="['text-[11px]', deliveryType === 'pickup' ? 'text-zinc-300' : 'text-zinc-500']">Gratis • Tanpa ongkir</p>
+            </div>
+          </button>
+          <button 
+            @click="deliveryType = 'delivery'"
+            :class="['p-3.5 rounded-xl border flex flex-col items-start gap-1.5 transition text-left', deliveryType === 'delivery' ? 'border-amber-600 bg-amber-50 text-amber-900 shadow-md' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
+          >
+            <Bike :size="20" :class="deliveryType === 'delivery' ? 'text-amber-600' : 'text-zinc-900'" />
+            <div>
+              <p class="text-xs font-black uppercase">Diantar</p>
+              <p :class="['text-[11px] font-bold', deliveryType === 'delivery' ? 'text-amber-700' : 'text-zinc-500']">+ {{ formatRupiah(DELIVERY_FEE) }}</p>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-4">
+        <h2 class="font-bold text-gray-800 text-base">Informasi Pemesanan</h2>
+        
+        <div class="flex flex-col gap-1.5">
+          <label class="text-xs font-semibold text-gray-600 flex items-center gap-1">
+            <User :size="14" class="text-blue-600" /> Nama Lengkap *
+          </label>
+          <input
+            v-model="customerName"
+            type="text"
+            placeholder="Contoh: Bpk. Budi"
+            class="w-full px-4 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 outline-none"
+          />
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-xs font-semibold text-gray-600 flex items-center gap-1">
+            <MapPin :size="14" class="text-blue-600" /> Alamat / Patokan *
+          </label>
+          <textarea
+            v-model="customerAddress"
+            rows="3"
+            placeholder="Contoh: RT 02/05 Jl. Sinar Pagi No 10, patokan warung sebelah"
+            class="w-full px-4 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 outline-none resize-none"
+          ></textarea>
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-xs font-semibold text-gray-600 flex items-center gap-1">
+            <StickyNote :size="14" class="text-blue-600" /> Catatan / Notes <span class="font-normal text-gray-400">(Opsional)</span>
+          </label>
+          <textarea
+            v-model="customerNotes"
+            rows="3"
+            placeholder="Contoh: es batu jangan terlalu banyak, saos dikit aja, mie setengah mateng dll"
+            class="w-full px-4 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 outline-none resize-none"
+          ></textarea>
+          <p class="text-[10px] text-zinc-400">Contoh: es batu jangan terlalu banyak, saos dikit aja, dll</p>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 flex flex-col gap-3">
+        <h2 class="font-bold text-gray-800 text-base">Metode Pembayaran</h2>
+
+        <!-- INI YANG DIRUBAH MET -> ATAS BAWAH BUKAN GRID 2 -->
+        <div class="flex flex-col gap-2">
+          <button 
+            @click="paymentMethod = 'COD'"
+            :class="['p-3.5 rounded-xl border flex items-center justify-between gap-3 transition text-left', paymentMethod === 'COD' ? 'border-blue-600 bg-blue-50 text-blue-900 shadow-sm' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
+          >
+            <div class="flex items-center gap-3">
+              <div :class="['p-2 rounded-xl', paymentMethod === 'COD' ? 'bg-blue-600 text-white' : 'bg-zinc-100 text-zinc-600']">
+                <Banknote :size="20" />
+              </div>
+              <div>
+                <p class="text-xs font-black">Bayar di Tempat (COD)</p>
+                <p class="text-[11px] text-zinc-500 leading-tight">Bayar tunai saat diterima/diambil</p>
+              </div>
+            </div>
+            <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0', paymentMethod === 'COD' ? 'border-blue-600 bg-blue-600' : 'border-zinc-300']">
+              <div v-if="paymentMethod === 'COD'" class="w-2 h-2 bg-white rounded-full"></div>
+            </div>
+          </button>
+          <button 
+            @click="paymentMethod = 'QRIS'"
+            :class="['p-3.5 rounded-xl border flex items-center justify-between gap-3 transition text-left', paymentMethod === 'QRIS' ? 'border-emerald-600 bg-emerald-50 text-emerald-900 shadow-sm' : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50']"
+          >
+            <div class="flex items-center gap-3">
+              <div :class="['p-2 rounded-xl', paymentMethod === 'QRIS' ? 'bg-emerald-600 text-white' : 'bg-zinc-100 text-zinc-600']">
+                <QrCode :size="20" />
+              </div>
+              <div>
+                <p class="text-xs font-black">QRIS</p>
+                <p class="text-[11px] text-zinc-500 leading-tight">Scan e-wallet / m-banking</p>
+              </div>
+            </div>
+            <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0', paymentMethod === 'QRIS' ? 'border-emerald-600 bg-emerald-600' : 'border-zinc-300']">
+              <div v-if="paymentMethod === 'QRIS'" class="w-2 h-2 bg-white rounded-full"></div>
+            </div>
+          </button>
+        </div>
+
+        <div v-if="paymentMethod === 'QRIS'" class="flex flex-col gap-4 mt-1 pt-4 border-t border-dashed border-gray-200">
+          <div class="bg-gray-50 p-4 rounded-2xl border border-gray-200 flex flex-col items-center text-center gap-3">
+            <div class="flex items-center gap-1.5 text-emerald-700 text-xs font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+              <ShieldCheck :size="14" /> Pastikan: {{ qrisSettings.merchantName }}
+            </div>
+            
+            <div @click="isQrisFullscreen = true" class="relative w-full max-w-[320px] bg-white rounded-2xl p-3 shadow-sm border border-gray-200 flex items-center justify-center cursor-zoom-in group overflow-hidden">
+              <img v-if="qrisSettings.qrisUrl" :src="qrisSettings.qrisUrl" alt="QRIS" class="w-full h-auto object-contain rounded-xl" />
+              <p v-else class="text-xs text-gray-400 py-10">QRIS belum diset oleh admin</p>
+              <div class="absolute top-2.5 right-2.5 p-1.5 bg-black/60 text-white rounded-lg opacity-0 group-hover:opacity-100 transition">
+                <Maximize2 :size="16" />
+              </div>
+            </div>
+            
+            <p class="text-xs text-gray-500">Tap gambar untuk fullscreen • Scan dengan BCA, BRI, Dana, OVO, GoPay, dll.</p>
+
+            <button @click="downloadQris" class="w-full max-w-[320px] flex items-center justify-center gap-2 px-4 py-3 bg-zinc-900 text-white rounded-xl text-xs font-black active:scale-95 transition shadow-md hover:bg-black">
+              <Download :size="16" /> Download QRIS
+            </button>
+            <p class="text-[10px] text-zinc-400 max-w-[320px] leading-tight">Kalo cuma punya 1 HP: Download dulu, baru buka e-wallet > Bayar > Pilih dari Galeri / Upload QRIS</p>
+          </div>
+          <div class="flex flex-col gap-2">
+            <label class="text-xs font-semibold text-gray-600">Upload Bukti Pembayaran QRIS *</label>
+            <label class="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl cursor-pointer text-sm font-medium transition border border-dashed border-gray-300">
+              <Upload :size="16" class="text-blue-600" />
+              <span>{{ buktiFile ? 'Ganti Bukti Bayar' : 'Pilih Foto Bukti Bayar' }}</span>
+              <input type="file" accept="image/*" @change="handleFileChange" class="hidden" />
+            </label>
+            <div v-if="uploading" class="flex items-center gap-2 text-xs text-blue-600 font-medium">
+              <Loader2 :size="14" class="animate-spin" /> Mengunggah...
+            </div>
+            <div v-if="buktiUrl" class="flex items-center gap-2 text-xs text-emerald-600 font-medium bg-emerald-50 p-2.5 rounded-xl border border-emerald-100">
+              <CheckCircle :size="16" /> Bukti bayar berhasil diunggah!
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl p-4 shadow-xs border border-gray-100 space-y-2">
+        <h2 class="font-bold text-gray-800 text-sm mb-1">Rincian Biaya</h2>
+        <div class="flex justify-between text-xs text-zinc-600"><span>Subtotal ({{ cartStore.totalItems }} item)</span><span>{{ formatRupiah(cartStore.totalPrice) }}</span></div>
+        <div class="flex justify-between text-xs" :class="deliveryFee > 0 ? 'text-amber-600 font-bold' : 'text-zinc-400'">
+          <span>Ongkir ({{ deliveryType === 'delivery' ? 'Diantar' : 'Ambil di Warung' }})</span>
+          <span>{{ deliveryFee > 0 ? formatRupiah(deliveryFee) : 'Gratis' }}</span>
+        </div>
+        <div class="border-t border-dashed pt-2 flex justify-between font-black text-sm"><span>Total Tagihan</span><span class="text-blue-600">{{ formatRupiah(finalTotal) }}</span></div>
+      </div>
+    </main>
+
+    <footer class="fixed bottom-0 inset-x-0 bg-white border-t border-gray-100 p-4 shadow-lg z-30">
+      <div class="max-w-4xl mx-auto flex items-center justify-between gap-4">
+        <div>
+          <p class="text-xs text-gray-500">Total Tagihan</p>
+          <p class="text-lg font-extrabold text-blue-600">{{ formatRupiah(finalTotal) }}</p>
+          <p v-if="deliveryFee > 0" class="text-[10px] text-amber-600 font-bold">Termasuk ongkir {{ formatRupiah(deliveryFee) }}</p>
+        </div>
+        <button
+          @click="handleCheckout"
+          :disabled="loadingCheckout"
+          class="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition shadow-sm flex items-center gap-2 disabled:opacity-50"
+        >
+          <Loader2 v-if="loadingCheckout" :size="18" class="animate-spin" />
+          <span>Kirim Pesanan ke WA</span>
+        </button>
+      </div>
+    </footer>
+
+    <div v-if="isQrisFullscreen" @click="isQrisFullscreen = false" class="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-4">
+      <button @click="isQrisFullscreen = false" class="absolute top-4 right-4 p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition"><X :size="24" /></button>
+      <img :src="qrisSettings.qrisUrl" class="max-w-full max-h-[80vh] object-contain rounded-2xl bg-white p-2 shadow-2xl" @click.stop />
+      <button @click.stop="downloadQris" class="mt-6 px-6 py-3.5 bg-white text-zinc-900 rounded-full font-black text-xs flex items-center gap-2 shadow-xl active:scale-95"><Download :size="16" /> Download QRIS</button>
+    </div>
+  </div>
+</template>
+===== src/views/CheckoutSuccess.vue =====
+<script setup>
+import { CheckCircle, Home } from 'lucide-vue-next'
+import { useCartStore } from '../stores/cartStore'
+import { onMounted } from 'vue'
+
+const cartStore = useCartStore()
+
+onMounted(async () => {
+  await cartStore.clearCart()
+})
+</script>
+
+<template>
+  <div class="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl p-6 sm:p-8 shadow-sm border border-gray-100 max-w-md w-full text-center flex flex-col items-center gap-4">
+      <div class="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-2">
+        <CheckCircle :size="36" />
+      </div>
+      <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Pesanan Berhasil Dikirim!</h1>
+      <p class="text-sm text-gray-500 leading-relaxed">
+        Pesanan kamu sudah diteruskan via WhatsApp ke Warung Sinar Pagi. Admin kami akan segera memproses pesananmu.
+      </p>
+
+      <router-link to="/" class="mt-4 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-sm">
+        <Home :size="18" />
+        <span>Kembali ke Katalog</span>
+      </router-link>
+    </div>
+  </div>
 </template>
 
+===== src/config/catalogCategory.js =====
+export const PINNED_CATEGORIES = [
+  'MIE',
+  'OBAT',
+  'SNACK 2K',
+  'KOPI SACHET',
+  'MINUMAN BOTOL',
+  // tambah lagi kalo mau 5: 'MIE'
+]
+
+export const VISIBLE_COUNT = 4 // mau tampil 5 ganti jadi 5
