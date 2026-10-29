@@ -5,8 +5,6 @@ import { useCartStore } from '../stores/cartStore'
 import { getThumbUrl } from '../services/cloudinaryService'
 import { formatRupiah } from '../utils/formatters'
 import { buildCartItem } from '../utils/productHelper'
-import { db } from '../db/index.js'
-import { PINNED_CATEGORIES, VISIBLE_COUNT } from '../config/catalogCategory.js'
 import { Search, Package, Plus, AlertTriangle, ShoppingCart, ArrowRight, X, Check } from 'lucide-vue-next'
 import { useCartAnimation } from '../composables/useCartAnimation'
 
@@ -31,50 +29,9 @@ onMounted(async () => {
   await cartStore.loadCart()
 })
 
-// AMBIL PINNED DARI LOCALSTORAGE DULU, KALO GA ADA BARU DARI CONFIG FILE
-function getPinnedCategories() {
-  try {
-    const fromLS = JSON.parse(localStorage.getItem('sinar_pagi_pinned_categories') || 'null')
-    if (fromLS && Array.isArray(fromLS) && fromLS.length > 0) return fromLS
-  } catch {}
-  return PINNED_CATEGORIES
-}
-
-const popularCategories = computed(() => {
-  const all = productStore.categories || []
-  const catsOnly = all.filter(c => c !== 'SEMUA' && c.toUpperCase() !== 'SEMUA')
-  const pinned = getPinnedCategories()
-
-  // KALO PINNED ADA ISINYA, PAKE PINNED SESUAI URUTAN LU
-  if (pinned && pinned.length > 0) {
-    // filter biar cuma yang beneran ada di DB
-    const valid = pinned.filter(p => catsOnly.includes(p))
-    if (valid.length > 0) return valid.slice(0, VISIBLE_COUNT)
-  }
-
-  // KALO PINNED KOSONG, FALLBACK AUTO PALING LARIS (JUMLAH PRODUK TERBANYAK)
-  const counts = {}
-  const products = productStore.products || []
-  if (products.length === 0) {
-    return catsOnly.sort((a,b) => a.localeCompare(b)).slice(0, VISIBLE_COUNT)
-  }
-  products.forEach(p => {
-    const cat = p.category || 'UMUM'
-    counts[cat] = (counts[cat] || 0) + 1
-  })
-  return catsOnly.sort((a,b) => (counts[b]||0) - (counts[a]||0)).slice(0, VISIBLE_COUNT)
-})
-
-const visibleCategories = computed(() => {
-  const semua = 'SEMUA'
-  return [semua, ...popularCategories.value]
-})
-
-const remainingCategories = computed(() => {
-  const all = productStore.categories || []
-  const visibleSet = new Set(visibleCategories.value)
-  return all.filter(c => !visibleSet.has(c))
-})
+// KATEGORI POPULER & VISIBLE SEKARANG MURNI DARI PRODUCT STORE (100% FULL SoC)
+const visibleCategories = computed(() => productStore.visibleCategories)
+const remainingCategories = computed(() => productStore.remainingCategories)
 
 const filteredSheetCategories = computed(() => {
   const all = productStore.categories || []
@@ -91,17 +48,20 @@ function selectCategory(cat) {
 async function openProductOptions(product) {
   let pkgs = []
   let services = []
+  
+  // SEKARANG MEMANGGIL REPOSITORY VIA STORE (TANPA DIRECT DEXIE DB TOUCH IN VIEW)
   try {
-    const allPkgs = await db.product_packages.where('productId').equals(product.id).toArray()
-    pkgs = allPkgs.filter(p => !p.deleted).filter(p => {
+    const allPkgs = await productStore.fetchProductPackages(product.id)
+    pkgs = allPkgs.filter(p => {
       const name = (p.name || '').toUpperCase()
       const isBelanjaBesar = ['RENCENG','RENCENGAN','DUS','KARDUS'].some(bad => name.includes(bad))
       const isSatuBatang = (p.qty_pcs || 0) === 1
       return !isBelanjaBesar && !isSatuBatang
     }).sort((a,b) => (a.order ?? 999) - (b.order ?? 999))
   } catch { pkgs = [] }
+
   try {
-    const allServices = (await db.services.toArray()).filter(s => !s.deleted)
+    const allServices = await productStore.fetchAllServices()
     const getIds = (s) => {
       if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
       if (s.productId) return [s.productId]
@@ -114,6 +74,7 @@ async function openProductOptions(product) {
       services = allServices.filter(s => { const ids = getIds(s); return ids.length === 0 && (s.category || '').toUpperCase() === cat })
     }
   } catch { services = [] }
+
   const hasOptions = pkgs.length > 0 || services.length > 0
   if (!hasOptions) {
     const itemToAdd = buildCartItem(product, [], product.price_sell, null)

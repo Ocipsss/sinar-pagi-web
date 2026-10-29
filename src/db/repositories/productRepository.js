@@ -21,5 +21,15 @@ export const productRepo = {
         await db.products.put({ ...p, synced: 1 })
       }
     })
+  },
+  // MEWADAHI QUERY PACKAGES AGAR VIEW TIDAK TOUCH DB
+  getPackagesByProductId: async (productId) => {
+    const allPkgs = await db.product_packages.where('productId').equals(productId).toArray()
+    return allPkgs.filter(p => !p.deleted)
+  },
+  // MEWADAHI QUERY SERVICES AGAR VIEW TIDAK TOUCH DB
+  getAllServices: async () => {
+    const allServices = await db.services.toArray()
+    return allServices.filter(s => !s.deleted)
   }
 }
