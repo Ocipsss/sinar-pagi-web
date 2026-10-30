@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /cart
+Disallow: /checkout
+Disallow: /checkout-success
+
+Sitemap: https://catalog-sinarpagi.vercel.app/sitemap.xml

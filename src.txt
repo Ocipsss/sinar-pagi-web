@@ -1,12 +1,3 @@
-===== src/App.vue =====
-<script setup>
-// Root Component Warung Sinar Pagi Web
-</script>
-
-<template>
-  <router-view />
-</template>
-
 ===== src/components/ui/Button.vue =====
 <script setup>
 defineProps({
@@ -80,203 +71,218 @@ defineEmits(['close'])
   </Teleport>
 </template>
 
-===== src/db/index.js =====
-// src/db/index.js - FINAL CLEAN WEB sinkron sama kasir v1 reset
-import Dexie from 'dexie'
+===== src/stores/productStore.js =====
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import { productService } from '../services/productService'
+import { productRepo } from '../db/repositories/productRepository'
+import { PINNED_CATEGORIES, VISIBLE_COUNT } from '../config/catalogCategory.js'
 
-export const db = new Dexie('SinarPagiWebDB')
+export const useProductStore = defineStore('product', () => {
+  const products = ref([])
+  const loading = ref(false)
+  const searchQuery = ref('')
+  const selectedCategory = ref('SEMUA')
 
-db.version(1).stores({
-  products: 'id, name, category, isPublished, updatedAt, synced, deleted',
-  product_packages: 'id, productId, name, order, qty_pcs, price_sell, updatedAt, synced, deleted',
-  services: 'id, name, price, category, *productIds, productId, updatedAt, synced, deleted',
-  cart: 'id, productId, updatedAt',
-  settings: 'id, updatedAt'
-})
-
-export default db
-===== src/db/repositories/cartRepository.js =====
-import { db } from '../index.js'
-
-function toPlain(obj) {
-  // Paling aman buat IDB: JSON clone biar hilang semua Proxy & function
-  return JSON.parse(JSON.stringify(obj))
-}
-
-export const cartRepo = {
-  async getAll() {
-    return await db.cart.toArray()
-  },
-
-  async save(item) {
-    const plain = toPlain(item)
-    return await db.cart.put(plain)
-  },
-
-  async removeById(cartId) {
-    await db.cart.delete(cartId)
-  },
-
-  async updateQtyById(cartId, qty) {
-    const item = await db.cart.get(cartId)
-    if (item) {
-      item.qty = qty
-      item.updatedAt = new Date().toISOString()
-      await db.cart.put(toPlain(item))
-    }
-  },
-
-  async clear() {
-    await db.cart.clear()
+  // AMBIL PINNED DARI LOCALSTORAGE DULU, KALO GA ADA BARU DARI CONFIG FILE
+  function getPinnedCategories() {
+    try {
+      const fromLS = JSON.parse(localStorage.getItem('sinar_pagi_pinned_categories') || 'null')
+      if (fromLS && Array.isArray(fromLS) && fromLS.length > 0) return fromLS
+    } catch {}
+    return PINNED_CATEGORIES
   }
-}
-===== src/db/repositories/productRepository.js =====
-import { db } from '../index.js'
 
-export const productRepo = {
-  getPublished: async () => {
-    const list = await db.products.where('isPublished').equals(1).toArray()
-    return list.filter(p => !p.deleted)
-  },
-  getById: async (id) => {
-    const item = await db.products.get(id)
-    return item && item.isPublished && !item.deleted ? item : null
-  },
-  getByCategory: async (category) => {
-    if (!category || category === 'SEMUA') return productRepo.getPublished()
-    const list = await db.products.where('category').equals(category).toArray()
-    return list.filter(p => p.isPublished && !p.deleted)
-  },
-  bulkSave: async (products) => {
-    if (!products.length) return
-    await db.transaction('rw', db.products, async () => {
-      for (const p of products) {
-        await db.products.put({ ...p, synced: 1 })
-      }
+  const categories = computed(() => {
+    const cats = new Set(products.value.map(p => p.category || 'UMUM'))
+    return ['SEMUA', ...Array.from(cats)]
+  })
+
+  // MEMINDAHKAN LOGIKA POPULAR CATEGORIES DARI CATALOG.VUE KE STORE
+  const popularCategories = computed(() => {
+    const all = categories.value || []
+    const catsOnly = all.filter(c => c !== 'SEMUA' && c.toUpperCase() !== 'SEMUA')
+    const pinned = getPinnedCategories()
+
+    // KALO PINNED ADA ISINYA, PAKE PINNED SESUAI URUTAN
+    if (pinned && pinned.length > 0) {
+      const valid = pinned.filter(p => catsOnly.includes(p))
+      if (valid.length > 0) return valid.slice(0, VISIBLE_COUNT)
+    }
+
+    // KALO PINNED KOSONG, FALLBACK AUTO PALING LARIS (JUMLAH PRODUK TERBANYAK)
+    const counts = {}
+    if (products.value.length === 0) {
+      return catsOnly.sort((a, b) => a.localeCompare(b)).slice(0, VISIBLE_COUNT)
+    }
+    products.value.forEach(p => {
+      const cat = p.category || 'UMUM'
+      counts[cat] = (counts[cat] || 0) + 1
     })
+    return catsOnly.sort((a, b) => (counts[b] || 0) - (counts[a] || 0)).slice(0, VISIBLE_COUNT)
+  })
+
+  const visibleCategories = computed(() => {
+    return ['SEMUA', ...popularCategories.value]
+  })
+
+  const remainingCategories = computed(() => {
+    const visibleSet = new Set(visibleCategories.value)
+    return categories.value.filter(c => !visibleSet.has(c))
+  })
+
+  const filteredProducts = computed(() => {
+    return products.value.filter(p => {
+      const matchSearch = p.name.toLowerCase().includes(searchQuery.value.toLowerCase())
+      const matchCategory = selectedCategory.value === 'SEMUA' || p.category === selectedCategory.value
+      return matchSearch && matchCategory
+    })
+  })
+
+  async function loadProducts() {
+    loading.value = true
+    try {
+      const data = await productService.syncPublishedProducts()
+      products.value = data || []
+    } catch (err) {
+      console.error('[ProductStore] Gagal memuat produk:', err)
+      products.value = await productRepo.getPublished()
+    } finally {
+      loading.value = false
+    }
   }
-}
-===== src/main.js =====
-import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import App from './App.vue'
-import router from './router'
-import './style.css'
 
-const app = createApp(App)
+  // HELPER UNTUK OPSI PRODUK LEWAT REPOSITORY (VIEW TANPA TOUCH DB)
+  async function fetchProductPackages(productId) {
+    return await productRepo.getPackagesByProductId(productId)
+  }
 
-app.use(createPinia())
-app.use(router)
+  async function fetchAllServices() {
+    return await productRepo.getAllServices()
+  }
 
-app.mount('#app')
-
-===== src/router/index.js =====
-import { createRouter, createWebHistory } from 'vue-router'
-import Catalog from '../views/Catalog.vue'
-import Cart from '../views/Cart.vue'
-import Checkout from '../views/Checkout.vue'
-import CheckoutSuccess from '../views/CheckoutSuccess.vue'
-
-const routes = [
-  { path: '/', name: 'Catalog', component: Catalog },
-  { path: '/cart', name: 'Cart', component: Cart },
-  { path: '/checkout', name: 'Checkout', component: Checkout },
-  { path: '/checkout-success', name: 'CheckoutSuccess', component: CheckoutSuccess }
-]
-
-const router = createRouter({
-  history: createWebHistory(),
-  routes
+  return {
+    products,
+    loading,
+    searchQuery,
+    selectedCategory,
+    categories,
+    popularCategories,
+    visibleCategories,
+    remainingCategories,
+    filteredProducts,
+    loadProducts,
+    fetchProductPackages,
+    fetchAllServices
+  }
 })
 
-export default router
+===== src/stores/cartStore.js =====
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import { cartRepo } from '../db/repositories/cartRepository'
 
-===== src/services/cloudinaryService.js =====
-// src/services/cloudinaryService.js - Sinar Pagi Web
-const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || 'vezqidog'
-const UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_PRESET || 'sinarpagi-products'
+export const useCartStore = defineStore('cart', () => {
+  const items = ref([])
 
-/**
- * Compress via Canvas 800px JPEG 70%
- */
-export function compressImage(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const img = new Image()
-      img.onload = () => {
-        const canvas = document.createElement('canvas')
-        const maxWidth = 800
-        let width = img.width
-        let height = img.height
-        if (width > maxWidth) {
-          height = Math.round((height * maxWidth) / width)
-          width = maxWidth
-        }
-        canvas.width = width
-        canvas.height = height
-        const ctx = canvas.getContext('2d')
-        ctx.drawImage(img, 0, 0, width, height)
-        canvas.toBlob(
-          (blob) => (blob ? resolve(blob) : reject(new Error('Gagal kompres'))),
-          'image/jpeg',
-          0.7
-        )
+  async function loadCart() {
+    items.value = await cartRepo.getAll()
+  }
+
+  async function addToCart(product, qty = 1) {
+    const plainProduct = JSON.parse(JSON.stringify(product))
+    
+    const existing = items.value.find(i => 
+      i.productId === plainProduct.id && 
+      i.packageId === (plainProduct.packageId || null) &&
+      JSON.stringify(i.services || []) === JSON.stringify(plainProduct.services || [])
+    )
+    
+    if (existing) {
+      existing.qty += qty
+      existing.updatedAt = new Date().toISOString()
+      await cartRepo.save(existing)
+    } else {
+      const newItem = {
+        id: crypto.randomUUID(),
+        productId: plainProduct.id,
+        name: plainProduct.name,
+        originalName: plainProduct.originalName || plainProduct.name,
+        price_sell: Number(plainProduct.price_sell) || 0,
+        imageUrl: plainProduct.imageUrl || null,
+        qty: qty,
+        unit: plainProduct.unit || 'PCS',
+        note: plainProduct.note || '',
+        packageId: plainProduct.packageId || null,
+        services: plainProduct.services || [],
+        category: plainProduct.category || 'UMUM',
+        updatedAt: new Date().toISOString()
       }
-      img.onerror = (err) => reject(err)
-      img.src = event.target.result
+      await cartRepo.save(newItem)
     }
-    reader.onerror = (err) => reject(err)
-    reader.readAsDataURL(file)
-  })
-}
-
-/**
- * Upload ke Cloudinary - folder auto kebuat pas upload pertama
- * @param {Blob} imageBlob
- * @param {String} folder - 'sinar-pagi/products' | 'sinar-pagi/qris' | 'sinar-pagi/bukti-bayar'
- */
-export async function uploadToCloudinary(imageBlob, folder = 'sinar-pagi/bukti-bayar') {
-  const formData = new FormData()
-  formData.append('file', imageBlob)
-  formData.append('upload_preset', UPLOAD_PRESET)
-  formData.append('folder', folder) // INI YANG BIKIN AUTO FOLDER
-
-  const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
-    method: 'POST',
-    body: formData
-  })
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Cloudinary Upload Failed: ${errorText}`)
+    await loadCart()
   }
-  const data = await response.json()
+
+  // FIX: pake cartId (id random), bukan productId
+  async function updateQty(cartId, qty) {
+    if (qty <= 0) {
+      await cartRepo.removeById(cartId)
+    } else {
+      await cartRepo.updateQtyById(cartId, qty)
+    }
+    await loadCart()
+  }
+
+  async function removeFromCart(cartId) {
+    await cartRepo.removeById(cartId)
+    await loadCart()
+  }
+
+  async function clearCart() {
+    await cartRepo.clear()
+    items.value = []
+  }
+
+  const totalItems = computed(() => items.value.reduce((sum, i) => sum + i.qty, 0))
+  const totalPrice = computed(() => items.value.reduce((sum, i) => sum + (i.price_sell * i.qty), 0))
+
+  return { items, loadCart, addToCart, updateQty, removeFromCart, clearCart, totalItems, totalPrice }
+})
+===== src/composables/useCartAnimation.js =====
+import { ref } from 'vue'
+
+export function useCartAnimation() {
+  const isCartBouncing = ref(false)
+  const addedProductId = ref(null)
+
+  /**
+   * Menjalankan animasi micro-feedback di tombol + bounce pada keranjang
+   * @param {String|Number} productId - ID produk yang baru ditambahkan
+   * @param {Number} duration - Durasi animasi dalam ms
+   */
+  function triggerCartAnimation(productId = null, duration = 600) {
+    // 1. Set ID produk untuk menampilkan badge / micro-toast "✓ Ditambahkan"
+    if (productId) {
+      addedProductId.value = productId
+    }
+
+    // 2. Trigger efek bounce pada keranjang
+    isCartBouncing.value = true
+
+    // 3. Reset state setelah durasi selesai
+    setTimeout(() => {
+      isCartBouncing.value = false
+      addedProductId.value = null
+    }, duration)
+  }
+
   return {
-    secure_url: data.secure_url,
-    public_id: data.public_id
+    isCartBouncing,
+    addedProductId,
+    triggerCartAnimation
   }
 }
 
-// HELPER BIAR GA SALAH FOLDER MET
-export const uploadProductImage = (blob) => uploadToCloudinary(blob, 'sinar-pagi/products')
-export const uploadQrisImage = (blob) => uploadToCloudinary(blob, 'sinar-pagi/qris')
-export const uploadBuktiBayar = (blob) => uploadToCloudinary(blob, 'sinar-pagi/bukti-bayar')
-
-export function getThumbUrl(publicIdOrUrl, width = 300) {
-  if (!publicIdOrUrl) return ''
-  if (!publicIdOrUrl.includes('res.cloudinary.com')) {
-    return `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/w_${width},f_auto,q_auto/${publicIdOrUrl}`
-  }
-  return publicIdOrUrl.replace('/upload/', `/upload/w_${width},f_auto,q_auto/`)
-}
-
-export function getFullUrl(publicIdOrUrl, width = 800) {
-  if (!publicIdOrUrl) return ''
-  if (!publicIdOrUrl.includes('res.cloudinary.com')) {
-    return `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/w_${width},f_auto,q_auto/${publicIdOrUrl}`
-  }
-  return publicIdOrUrl.replace('/upload/', `/upload/w_${width},f_auto,q_auto/`)
-}
 ===== src/services/firebase.js =====
 // src/services/firebase.js
 import { initializeApp, getApps, getApp } from 'firebase/app'
@@ -612,6 +618,63 @@ export const qrisService = {
     return null
   }
 }
+===== src/services/cloudinaryService.js =====
+// src/services/cloudinaryService.js - Sinar Pagi Web
+import { compressImage } from '../utils/imageCompressor.js'
+
+// Re-export agar kompatibilitas fungsi pembeli di Checkout.vue tetap aman tanpa merusak apa pun
+export { compressImage }
+
+const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || 'vezqidog'
+const UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_PRESET || 'sinarpagi-products'
+
+/**
+ * Upload ke Cloudinary - folder auto kebuat pas upload pertama
+ * @param {Blob} imageBlob
+ * @param {String} folder - 'sinar-pagi/products' | 'sinar-pagi/qris' | 'sinar-pagi/bukti-bayar'
+ */
+export async function uploadToCloudinary(imageBlob, folder = 'sinar-pagi/bukti-bayar') {
+  const formData = new FormData()
+  formData.append('file', imageBlob)
+  formData.append('upload_preset', UPLOAD_PRESET)
+  formData.append('folder', folder) // INI YANG BIKIN AUTO FOLDER
+
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, {
+    method: 'POST',
+    body: formData
+  })
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Cloudinary Upload Failed: ${errorText}`)
+  }
+  const data = await response.json()
+  return {
+    secure_url: data.secure_url,
+    public_id: data.public_id
+  }
+}
+
+// HELPER BIAR GA SALAH FOLDER MET
+export const uploadProductImage = (blob) => uploadToCloudinary(blob, 'sinar-pagi/products')
+export const uploadQrisImage = (blob) => uploadToCloudinary(blob, 'sinar-pagi/qris')
+export const uploadBuktiBayar = (blob) => uploadToCloudinary(blob, 'sinar-pagi/bukti-bayar')
+
+export function getThumbUrl(publicIdOrUrl, width = 300) {
+  if (!publicIdOrUrl) return ''
+  if (!publicIdOrUrl.includes('res.cloudinary.com')) {
+    return `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/w_${width},f_auto,q_auto/${publicIdOrUrl}`
+  }
+  return publicIdOrUrl.replace('/upload/', `/upload/w_${width},f_auto,q_auto/`)
+}
+
+export function getFullUrl(publicIdOrUrl, width = 800) {
+  if (!publicIdOrUrl) return ''
+  if (!publicIdOrUrl.includes('res.cloudinary.com')) {
+    return `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/w_${width},f_auto,q_auto/${publicIdOrUrl}`
+  }
+  return publicIdOrUrl.replace('/upload/', `/upload/w_${width},f_auto,q_auto/`)
+}
+
 ===== src/services/waService.js =====
 // src/services/waService.js - FIX SPASI BIAR RAPIH PAS LANGSUNG KIRIM WA + HARGA JASA GA DOUBLE
 export const waService = {
@@ -689,127 +752,6 @@ function fmt(n) {
     minimumFractionDigits: 0 
   }).format(n || 0)
 }
-===== src/stores/cartStore.js =====
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import { cartRepo } from '../db/repositories/cartRepository'
-
-export const useCartStore = defineStore('cart', () => {
-  const items = ref([])
-
-  async function loadCart() {
-    items.value = await cartRepo.getAll()
-  }
-
-  async function addToCart(product, qty = 1) {
-    const plainProduct = JSON.parse(JSON.stringify(product))
-    
-    const existing = items.value.find(i => 
-      i.productId === plainProduct.id && 
-      i.packageId === (plainProduct.packageId || null) &&
-      JSON.stringify(i.services || []) === JSON.stringify(plainProduct.services || [])
-    )
-    
-    if (existing) {
-      existing.qty += qty
-      existing.updatedAt = new Date().toISOString()
-      await cartRepo.save(existing)
-    } else {
-      const newItem = {
-        id: crypto.randomUUID(),
-        productId: plainProduct.id,
-        name: plainProduct.name,
-        originalName: plainProduct.originalName || plainProduct.name,
-        price_sell: Number(plainProduct.price_sell) || 0,
-        imageUrl: plainProduct.imageUrl || null,
-        qty: qty,
-        unit: plainProduct.unit || 'PCS',
-        note: plainProduct.note || '',
-        packageId: plainProduct.packageId || null,
-        services: plainProduct.services || [],
-        category: plainProduct.category || 'UMUM',
-        updatedAt: new Date().toISOString()
-      }
-      await cartRepo.save(newItem)
-    }
-    await loadCart()
-  }
-
-  // FIX: pake cartId (id random), bukan productId
-  async function updateQty(cartId, qty) {
-    if (qty <= 0) {
-      await cartRepo.removeById(cartId)
-    } else {
-      await cartRepo.updateQtyById(cartId, qty)
-    }
-    await loadCart()
-  }
-
-  async function removeFromCart(cartId) {
-    await cartRepo.removeById(cartId)
-    await loadCart()
-  }
-
-  async function clearCart() {
-    await cartRepo.clear()
-    items.value = []
-  }
-
-  const totalItems = computed(() => items.value.reduce((sum, i) => sum + i.qty, 0))
-  const totalPrice = computed(() => items.value.reduce((sum, i) => sum + (i.price_sell * i.qty), 0))
-
-  return { items, loadCart, addToCart, updateQty, removeFromCart, clearCart, totalItems, totalPrice }
-})
-===== src/stores/productStore.js =====
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import { productService } from '../services/productService'
-import { productRepo } from '../db/repositories/productRepository'
-
-export const useProductStore = defineStore('product', () => {
-  const products = ref([])
-  const loading = ref(false)
-  const searchQuery = ref('')
-  const selectedCategory = ref('SEMUA')
-
-  const categories = computed(() => {
-    const cats = new Set(products.value.map(p => p.category || 'UMUM'))
-    return ['SEMUA', ...Array.from(cats)]
-  })
-
-  const filteredProducts = computed(() => {
-    return products.value.filter(p => {
-      const matchSearch = p.name.toLowerCase().includes(searchQuery.value.toLowerCase())
-      const matchCategory = selectedCategory.value === 'SEMUA' || p.category === selectedCategory.value
-      return matchSearch && matchCategory
-    })
-  })
-
-  async function loadProducts() {
-    loading.value = true
-    try {
-      const data = await productService.syncPublishedProducts()
-      products.value = data || []
-    } catch (err) {
-      console.error('[ProductStore] Gagal memuat produk:', err)
-      products.value = await productRepo.getPublished()
-    } finally {
-      loading.value = false
-    }
-  }
-
-  return {
-    products,
-    loading,
-    searchQuery,
-    selectedCategory,
-    categories,
-    filteredProducts,
-    loadProducts
-  }
-})
-===== src/style.css =====
-@import "tailwindcss";
 ===== src/utils/formatters.js =====
 export function formatRupiah(val) {
   return new Intl.NumberFormat('id-ID', {
@@ -817,6 +759,44 @@ export function formatRupiah(val) {
     currency: 'IDR',
     maximumFractionDigits: 0
   }).format(val || 0)
+}
+
+===== src/utils/imageCompressor.js =====
+/**
+ * Utility Kompresi Gambar via Canvas (800px JPEG 70%)
+ * @param {File} file 
+ * @returns {Promise<Blob>}
+ */
+export function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        const maxWidth = 800
+        let width = img.width
+        let height = img.height
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width)
+          width = maxWidth
+        }
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0, width, height)
+        canvas.toBlob(
+          (blob) => (blob ? resolve(blob) : reject(new Error('Gagal kompres'))),
+          'image/jpeg',
+          0.7
+        )
+      }
+      img.onerror = (err) => reject(err)
+      img.src = event.target.result
+    }
+    reader.onerror = (err) => reject(err)
+    reader.readAsDataURL(file)
+  })
 }
 
 ===== src/utils/productHelper.js =====
@@ -890,451 +870,192 @@ export function hasProductOptions(product, packages = [], services = []) {
   const hasLegacyPack = (product.packPrice || 0) > 0
   return packages.length > 0 || services.length > 0 || hasLegacyPack
 }
-===== src/views/Cart.vue =====
+===== src/config/catalogCategory.js =====
+export const PINNED_CATEGORIES = [
+  'MIE',
+  'OBAT',
+  'SNACK 2K',
+  'KOPI SACHET',
+  'MINUMAN BOTOL',
+  // tambah lagi kalo mau 5: 'MIE'
+]
+
+export const VISIBLE_COUNT = 4 // mau tampil 5 ganti jadi 5
+===== src/router/index.js =====
+import { createRouter, createWebHistory } from 'vue-router'
+import Catalog from '../views/Catalog.vue'
+import Cart from '../views/Cart.vue'
+import Checkout from '../views/Checkout.vue'
+import CheckoutSuccess from '../views/CheckoutSuccess.vue'
+
+const routes = [
+  { path: '/', name: 'Catalog', component: Catalog },
+  { path: '/cart', name: 'Cart', component: Cart },
+  { path: '/checkout', name: 'Checkout', component: Checkout },
+  { path: '/checkout-success', name: 'CheckoutSuccess', component: CheckoutSuccess }
+]
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes
+})
+
+export default router
+
+===== src/style.css =====
+@import "tailwindcss";
+===== src/db/repositories/productRepository.js =====
+import { db } from '../index.js'
+
+export const productRepo = {
+  getPublished: async () => {
+    const list = await db.products.where('isPublished').equals(1).toArray()
+    return list.filter(p => !p.deleted)
+  },
+  getById: async (id) => {
+    const item = await db.products.get(id)
+    return item && item.isPublished && !item.deleted ? item : null
+  },
+  getByCategory: async (category) => {
+    if (!category || category === 'SEMUA') return productRepo.getPublished()
+    const list = await db.products.where('category').equals(category).toArray()
+    return list.filter(p => p.isPublished && !p.deleted)
+  },
+  bulkSave: async (products) => {
+    if (!products.length) return
+    await db.transaction('rw', db.products, async () => {
+      for (const p of products) {
+        await db.products.put({ ...p, synced: 1 })
+      }
+    })
+  },
+  // MEWADAHI QUERY PACKAGES AGAR VIEW TIDAK TOUCH DB
+  getPackagesByProductId: async (productId) => {
+    const allPkgs = await db.product_packages.where('productId').equals(productId).toArray()
+    return allPkgs.filter(p => !p.deleted)
+  },
+  // MEWADAHI QUERY SERVICES AGAR VIEW TIDAK TOUCH DB
+  getAllServices: async () => {
+    const allServices = await db.services.toArray()
+    return allServices.filter(s => !s.deleted)
+  }
+}
+
+===== src/db/repositories/cartRepository.js =====
+import { db } from '../index.js'
+
+function toPlain(obj) {
+  // Paling aman buat IDB: JSON clone biar hilang semua Proxy & function
+  return JSON.parse(JSON.stringify(obj))
+}
+
+export const cartRepo = {
+  async getAll() {
+    return await db.cart.toArray()
+  },
+
+  async save(item) {
+    const plain = toPlain(item)
+    return await db.cart.put(plain)
+  },
+
+  async removeById(cartId) {
+    await db.cart.delete(cartId)
+  },
+
+  async updateQtyById(cartId, qty) {
+    const item = await db.cart.get(cartId)
+    if (item) {
+      item.qty = qty
+      item.updatedAt = new Date().toISOString()
+      await db.cart.put(toPlain(item))
+    }
+  },
+
+  async clear() {
+    await db.cart.clear()
+  }
+}
+===== src/db/index.js =====
+// src/db/index.js - FINAL CLEAN WEB sinkron sama kasir v1 reset
+import Dexie from 'dexie'
+
+export const db = new Dexie('SinarPagiWebDB')
+
+db.version(1).stores({
+  products: 'id, name, category, isPublished, updatedAt, synced, deleted',
+  product_packages: 'id, productId, name, order, qty_pcs, price_sell, updatedAt, synced, deleted',
+  services: 'id, name, price, category, *productIds, productId, updatedAt, synced, deleted',
+  cart: 'id, productId, updatedAt',
+  settings: 'id, updatedAt'
+})
+
+export default db
+===== src/views/CheckoutSuccess.vue =====
 <script setup>
-import { onMounted } from 'vue'
+import { CheckCircle, Home } from 'lucide-vue-next'
 import { useCartStore } from '../stores/cartStore'
-import { getThumbUrl } from '../services/cloudinaryService'
-import { formatRupiah } from '../utils/formatters'
-import { ArrowLeft, Plus, Minus, Trash2, ShoppingBag, ArrowRight } from 'lucide-vue-next'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 const cartStore = useCartStore()
+const router = useRouter()
+
+const countdown = ref(5) // Hitung mundur 5 detik
+let timer = null
 
 onMounted(async () => {
-  await cartStore.loadCart()
+  // 1. Bersihkan keranjang
+  await cartStore.clearCart()
+
+  // 2. Hitung mundur untuk otomatis kembali ke Home
+  timer = setInterval(() => {
+    countdown.value--
+    if (countdown.value <= 0) {
+      clearInterval(timer)
+      router.push('/')
+    }
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
 })
 </script>
 
 <template>
-  <div class="min-h-screen bg-gray-50 pb-28">
-    <!-- HEADER STICKY RESPONSIF -->
-    <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-gray-100 px-4 md:px-6 lg:px-8 py-3.5 shadow-xs">
-      <div class="max-w-4xl mx-auto flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <router-link to="/" class="p-2 text-gray-600 hover:bg-gray-100 rounded-xl transition cursor-pointer">
-            <ArrowLeft :size="20" />
-          </router-link>
-          <h1 class="text-xl font-bold text-gray-900 tracking-tight">Keranjang Belanja</h1>
-        </div>
-        <span class="text-sm text-gray-500 font-bold bg-gray-100 px-3 py-1 rounded-full">{{ cartStore.totalItems }} item</span>
-      </div>
-    </header>
-
-    <!-- MAIN CONTENT KONTINER DI TENGAH LAYAR -->
-    <main class="max-w-4xl mx-auto p-4 md:p-6">
-      <!-- TAMPILAN JIKA KERANJANG KOSONG -->
-      <div v-if="cartStore.items.length === 0" class="text-center py-20 flex flex-col items-center bg-white rounded-3xl border border-gray-100 p-8 shadow-xs">
-        <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4 text-gray-400">
-          <ShoppingBag :size="40" />
-        </div>
-        <h2 class="text-lg font-bold text-gray-800">Keranjang Belanja Kosong</h2>
-        <p class="text-sm text-gray-500 font-medium mb-6 mt-1 max-w-sm">Kamu belum menambahkan produk apa pun ke keranjang belanja.</p>
-        <router-link to="/" class="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition shadow-md active:scale-95 cursor-pointer">
-          Mulai Belanja
-        </router-link>
+  <div class="min-h-screen bg-gray-50 flex items-center justify-center p-4 sm:p-6 md:p-8">
+    <!-- CARD UTAMA -->
+    <div class="bg-white rounded-3xl p-6 sm:p-10 shadow-xl border border-gray-100 max-w-md w-full text-center flex flex-col items-center gap-5 animate-in fade-in zoom-in-95 duration-200">
+      
+      <!-- ICON CHECKMARK -->
+      <div class="w-20 h-20 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center border border-emerald-100 shadow-inner">
+        <CheckCircle :size="44" />
       </div>
 
-      <!-- DAFTAR ITEM KERANJANG -->
-      <div v-else class="flex flex-col gap-4">
-        <div class="bg-white rounded-2xl p-4 md:p-5 shadow-xs border border-gray-100 flex flex-col gap-4">
-          <div v-for="item in cartStore.items" :key="item.id" class="flex items-center justify-between gap-3 sm:gap-4 pb-4 border-b border-gray-100 last:border-0 last:pb-0">
-            <!-- DETAIL INFORMASI ITEM -->
-            <div class="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-              <div class="w-16 h-16 sm:w-20 sm:h-20 bg-gray-100 rounded-2xl overflow-hidden shrink-0 border border-gray-100">
-                <img v-if="item.imageUrl" :src="getThumbUrl(item.imageUrl, 200)" :alt="item.name" class="w-full h-full object-cover" />
-                <div v-else class="w-full h-full flex items-center justify-center text-gray-400">
-                  <ShoppingBag :size="24" />
-                </div>
-              </div>
-              <div class="min-w-0 flex-1">
-                <h2 class="font-bold text-gray-800 text-sm sm:text-base truncate">{{ item.name }}</h2>
-                <p v-if="item.note" class="text-[11px] sm:text-xs text-amber-600 font-bold mt-0.5">+ {{ item.note }}</p>
-                <p class="text-blue-600 font-black text-sm sm:text-base mt-1">{{ formatRupiah(item.price_sell) }}</p>
-              </div>
-            </div>
-
-            <!-- KONTROL QTY & HAPUS -->
-            <div class="flex items-center gap-2 sm:gap-4 shrink-0">
-              <div class="flex items-center bg-gray-100/80 border border-gray-200/60 rounded-xl p-1 gap-1 sm:gap-2">
-                <button @click="cartStore.updateQty(item.id, item.qty - 1)" class="p-1.5 text-gray-600 hover:bg-white rounded-lg transition shadow-xs cursor-pointer active:scale-95">
-                  <Minus :size="14" />
-                </button>
-                <span class="text-sm font-black text-gray-800 w-6 text-center select-none">{{ item.qty }}</span>
-                <button @click="cartStore.updateQty(item.id, item.qty + 1)" class="p-1.5 text-gray-600 hover:bg-white rounded-lg transition shadow-xs cursor-pointer active:scale-95">
-                  <Plus :size="14" />
-                </button>
-              </div>
-
-              <button @click="cartStore.removeFromCart(item.id)" class="p-2 text-red-500 hover:bg-red-50 rounded-xl transition cursor-pointer active:scale-95" title="Hapus Item">
-                <Trash2 :size="18" />
-              </button>
-            </div>
-          </div>
-        </div>
+      <!-- TEKS INFORMASI SUKSES -->
+      <div class="space-y-2">
+        <h1 class="text-2xl sm:text-3xl font-black text-gray-900 tracking-tight">Pesanan Berhasil Dikirim!</h1>
+        <p class="text-xs sm:text-sm text-gray-500 leading-relaxed font-medium">
+          Pesanan kamu sudah diteruskan via WhatsApp ke Warung Sinar Pagi. Admin kami akan segera memproses dan merespons pesananmu.
+        </p>
       </div>
-    </main>
 
-    <!-- FOOTER STICKY DENGAN MAX-WIDTH RAPI DI TABLET & DESKTOP -->
-    <footer v-if="cartStore.items.length > 0" class="fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-gray-200 p-4 shadow-2xl z-30">
-      <div class="max-w-4xl mx-auto flex items-center justify-between gap-4">
-        <div>
-          <p class="text-xs text-gray-500 font-bold uppercase tracking-wider">Total Pembayaran</p>
-          <p class="text-lg sm:text-xl font-black text-blue-600">{{ formatRupiah(cartStore.totalPrice) }}</p>
-        </div>
-        <router-link to="/checkout" class="flex items-center gap-2 px-6 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition shadow-md active:scale-95 cursor-pointer">
-          <span>Lanjut Checkout</span>
-          <ArrowRight :size="18" />
-        </router-link>
-      </div>
-    </footer>
-  </div>
-</template>
+      <!-- INFORMASI AUTO REDIRECT -->
+      <p class="text-xs text-blue-600 font-bold bg-blue-50 px-4 py-2 rounded-xl">
+        Otomatis kembali ke katalog dalam <span class="font-black text-blue-700">{{ countdown }}</span> detik...
+      </p>
 
-===== src/views/Catalog.vue =====
-<script setup>
-import { ref, onMounted, computed } from 'vue'
-import { useProductStore } from '../stores/productStore'
-import { useCartStore } from '../stores/cartStore'
-import { getThumbUrl } from '../services/cloudinaryService'
-import { formatRupiah } from '../utils/formatters'
-import { buildCartItem } from '../utils/productHelper'
-import { db } from '../db/index.js'
-import { PINNED_CATEGORIES, VISIBLE_COUNT } from '../config/catalogCategory.js'
-import { Search, Package, Plus, AlertTriangle, ShoppingCart, ArrowRight, X, Check } from 'lucide-vue-next'
-import { useCartAnimation } from '../composables/useCartAnimation'
+      <!-- TOMBOL MANUAL KEMBALI KE KATALOG -->
+      <router-link 
+        to="/" 
+        class="mt-1 w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer"
+      >
+        <Home :size="18" />
+        <span>Kembali Sekarang</span>
+      </router-link>
 
-const productStore = useProductStore()
-const cartStore = useCartStore()
-
-const showModal = ref(false)
-const activeProduct = ref(null)
-const selectedPackage = ref(null)
-const selectedServices = ref([])
-const productPackages = ref([])
-const availableServices = ref([])
-
-const showCategorySheet = ref(false)
-const categorySearch = ref('')
-
-// ANIMASI OPSI C DARI COMPOSABLE TERPISAH
-const { isCartBouncing, addedProductId, triggerCartAnimation } = useCartAnimation()
-
-onMounted(async () => {
-  await productStore.loadProducts()
-  await cartStore.loadCart()
-})
-
-// AMBIL PINNED DARI LOCALSTORAGE DULU, KALO GA ADA BARU DARI CONFIG FILE
-function getPinnedCategories() {
-  try {
-    const fromLS = JSON.parse(localStorage.getItem('sinar_pagi_pinned_categories') || 'null')
-    if (fromLS && Array.isArray(fromLS) && fromLS.length > 0) return fromLS
-  } catch {}
-  return PINNED_CATEGORIES
-}
-
-const popularCategories = computed(() => {
-  const all = productStore.categories || []
-  const catsOnly = all.filter(c => c !== 'SEMUA' && c.toUpperCase() !== 'SEMUA')
-  const pinned = getPinnedCategories()
-
-  // KALO PINNED ADA ISINYA, PAKE PINNED SESUAI URUTAN LU
-  if (pinned && pinned.length > 0) {
-    // filter biar cuma yang beneran ada di DB
-    const valid = pinned.filter(p => catsOnly.includes(p))
-    if (valid.length > 0) return valid.slice(0, VISIBLE_COUNT)
-  }
-
-  // KALO PINNED KOSONG, FALLBACK AUTO PALING LARIS (JUMLAH PRODUK TERBANYAK)
-  const counts = {}
-  const products = productStore.products || []
-  if (products.length === 0) {
-    return catsOnly.sort((a,b) => a.localeCompare(b)).slice(0, VISIBLE_COUNT)
-  }
-  products.forEach(p => {
-    const cat = p.category || 'UMUM'
-    counts[cat] = (counts[cat] || 0) + 1
-  })
-  return catsOnly.sort((a,b) => (counts[b]||0) - (counts[a]||0)).slice(0, VISIBLE_COUNT)
-})
-
-const visibleCategories = computed(() => {
-  const semua = 'SEMUA'
-  return [semua, ...popularCategories.value]
-})
-
-const remainingCategories = computed(() => {
-  const all = productStore.categories || []
-  const visibleSet = new Set(visibleCategories.value)
-  return all.filter(c => !visibleSet.has(c))
-})
-
-const filteredSheetCategories = computed(() => {
-  const all = productStore.categories || []
-  const list = all.filter(c => c.toUpperCase() !== 'SEMUA')
-  if (!categorySearch.value) return list.sort((a,b) => a.localeCompare(b))
-  return list.filter(c => c.toLowerCase().includes(categorySearch.value.toLowerCase())).sort((a,b) => a.localeCompare(b))
-})
-
-function selectCategory(cat) {
-  productStore.selectedCategory = cat
-  showCategorySheet.value = false
-}
-
-async function openProductOptions(product) {
-  let pkgs = []
-  let services = []
-  try {
-    const allPkgs = await db.product_packages.where('productId').equals(product.id).toArray()
-    pkgs = allPkgs.filter(p => !p.deleted).filter(p => {
-      const name = (p.name || '').toUpperCase()
-      const isBelanjaBesar = ['RENCENG','RENCENGAN','DUS','KARDUS'].some(bad => name.includes(bad))
-      const isSatuBatang = (p.qty_pcs || 0) === 1
-      return !isBelanjaBesar && !isSatuBatang
-    }).sort((a,b) => (a.order ?? 999) - (b.order ?? 999))
-  } catch { pkgs = [] }
-  try {
-    const allServices = (await db.services.toArray()).filter(s => !s.deleted)
-    const getIds = (s) => {
-      if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
-      if (s.productId) return [s.productId]
-      return []
-    }
-    const custom = allServices.filter(s => getIds(s).includes(product.id))
-    if (custom.length > 0) services = custom
-    else {
-      const cat = (product.category || '').toUpperCase()
-      services = allServices.filter(s => { const ids = getIds(s); return ids.length === 0 && (s.category || '').toUpperCase() === cat })
-    }
-  } catch { services = [] }
-  const hasOptions = pkgs.length > 0 || services.length > 0
-  if (!hasOptions) {
-    const itemToAdd = buildCartItem(product, [], product.price_sell, null)
-    cartStore.addToCart(itemToAdd, 1)
-    triggerCartAnimation(product.id)
-    return
-  }
-  activeProduct.value = product
-  selectedPackage.value = null
-  selectedServices.value = []
-  productPackages.value = pkgs
-  availableServices.value = services
-  showModal.value = true
-}
-
-const totalPrice = computed(() => {
-  if (!activeProduct.value) return 0
-  let price = activeProduct.value.price_sell
-  if (selectedPackage.value) price = selectedPackage.value.price_sell
-  for (const svc of selectedServices.value) price += Number(svc.price) || 0
-  return price
-})
-
-function toggleService(svc) {
-  const exists = selectedServices.value.find(s => s.id === svc.id)
-  if (exists) selectedServices.value = []
-  else selectedServices.value = [svc]
-}
-
-function addToCartWithOptions() {
-  if (!activeProduct.value) return
-  const currentId = activeProduct.value.id
-  const itemToAdd = buildCartItem(activeProduct.value, selectedServices.value, totalPrice.value, selectedPackage.value)
-  cartStore.addToCart(itemToAdd, 1)
-  triggerCartAnimation(currentId)
-  showModal.value = false
-  activeProduct.value = null
-}
-
-// BUAT DEBUG GONTA-GANTI CEPAT DI CONSOLE
-window.setPinnedCategories = (arr) => {
-  localStorage.setItem('sinar_pagi_pinned_categories', JSON.stringify(arr))
-  location.reload()
-}
-window.clearPinnedCategories = () => {
-  localStorage.removeItem('sinar_pagi_pinned_categories')
-  location.reload()
-}
-</script>
-
-<template>
-  <div class="min-h-screen bg-gray-50 pb-28">
-    <!-- HEADER STICKY (RESPONSIF TABLET & DESKTOP) -->
-    <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-gray-100 px-4 md:px-6 lg:px-8 py-3.5 shadow-xs">
-      <div class="max-w-7xl mx-auto flex flex-col gap-3">
-        
-        <!-- BARIS ATAS: LOGO/BRAND + SEARCH + TOMBOL KERANJANG DESKTOP -->
-        <div class="flex items-center justify-between gap-3 md:gap-6">
-          <div class="flex items-center gap-3 shrink-0">
-            <div class="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black text-sm shadow-xs">
-              SP
-            </div>
-            <div>
-              <h1 class="text-lg md:text-xl font-bold text-gray-900 tracking-tight leading-none">Warung Sinar Pagi</h1>
-              <p class="text-[11px] font-bold text-gray-400 mt-0.5">Katalog & Order Online</p>
-            </div>
-          </div>
-
-          <!-- SEARCH BAR DI KANAN LOGO SAAT TABLET/DESKTOP -->
-          <div class="relative w-full max-w-xl hidden md:block">
-            <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Search :size="18" /></span>
-            <input v-model="productStore.searchQuery" type="text" placeholder="Cari barang di warung..." class="w-full pl-10 pr-10 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 placeholder-gray-400 outline-none transition" />
-            <button v-if="productStore.searchQuery" @click="productStore.searchQuery = ''" class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 active:scale-90 transition"><X :size="18" /></button>
-          </div>
-
-          <!-- TOMBOL KERANJANG HEADER -->
-          <router-link 
-            to="/cart" 
-            :class="[
-              'relative p-2.5 md:px-4 md:py-2.5 rounded-xl transition-all duration-200 shrink-0 flex items-center gap-2 font-bold text-sm cursor-pointer select-none',
-              isCartBouncing ? 'bg-blue-600 text-white scale-110 shadow-lg' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
-            ]"
-          >
-            <ShoppingCart :size="20" :class="isCartBouncing ? 'animate-bounce' : ''" />
-            <span class="hidden md:inline">Keranjang</span>
-            <span 
-              v-if="cartStore.totalItems > 0" 
-              :class="[
-                'text-xs px-2 py-0.5 rounded-full font-bold shadow-xs transition-transform duration-200',
-                isCartBouncing ? 'bg-white text-blue-600 scale-125' : 'bg-red-500 text-white'
-              ]"
-            >
-              {{ cartStore.totalItems }}
-            </span>
-          </router-link>
-        </div>
-
-        <!-- SEARCH BAR UNTUK HP (< md) -->
-        <div class="relative w-full md:hidden">
-          <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Search :size="18" /></span>
-          <input v-model="productStore.searchQuery" type="text" placeholder="Cari barang di warung..." class="w-full pl-10 pr-10 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 placeholder-gray-400 outline-none transition" />
-          <button v-if="productStore.searchQuery" @click="productStore.searchQuery = ''" class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 active:scale-90 transition"><X :size="18" /></button>
-        </div>
-
-        <!-- CHIP KATEGORI (SCROLL HORIZONTAL CONTAINER) -->
-        <div class="flex gap-2 overflow-x-auto pb-1 no-scrollbar items-center">
-          <button v-for="cat in visibleCategories" :key="cat" @click="productStore.selectedCategory = cat" :class="['px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition shrink-0 cursor-pointer', productStore.selectedCategory === cat ? 'bg-blue-600 text-white shadow-xs' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">{{ cat }}</button>
-          <button v-if="remainingCategories.length > 0" @click="showCategorySheet=true" :class="['px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition shrink-0 border border-dashed cursor-pointer', productStore.categories.some(c => remainingCategories.includes(c) && c === productStore.selectedCategory) ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-600 border-zinc-300']">Lainnya ({{ remainingCategories.length }})</button>
-        </div>
-      </div>
-    </header>
-
-    <!-- MAIN KONTEN: GRID RESPONSIF 2 HP, 3 TABLET, 4-6 DESKTOP -->
-    <main class="max-w-7xl mx-auto p-4 md:p-6">
-      <div v-if="productStore.loading" class="flex justify-center items-center py-20"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div></div>
-      <div v-else-if="productStore.filteredProducts.length === 0" class="text-center py-20 bg-white rounded-3xl border border-gray-100 shadow-xs"><Package :size="48" class="mx-auto text-gray-300 mb-2" /><p class="text-gray-500 font-medium">Produk tidak ditemukan</p></div>
-      <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4 md:gap-5">
-        <div v-for="product in productStore.filteredProducts" :key="product.id" @click="openProductOptions(product)" class="bg-white rounded-2xl p-3 md:p-3.5 shadow-xs border border-gray-100 flex flex-col justify-between hover:shadow-md hover:border-blue-200 transition cursor-pointer group">
-          <div>
-            <div class="relative w-full aspect-square bg-gray-100 rounded-xl overflow-hidden mb-3">
-              <img v-if="product.imageUrl" :src="getThumbUrl(product.imageUrl, 300)" :alt="product.name" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
-              <div v-else class="w-full h-full flex items-center justify-center text-gray-400"><Package :size="32" /></div>
-              <span class="absolute top-2 left-2 bg-black/60 backdrop-blur-xs text-white text-[10px] px-2 py-0.5 rounded-md font-medium">{{ product.category || 'UMUM' }}</span>
-              
-              <!-- POP-UP MICRO-TOAST PADA KARTU PRODUK (OPSI C) -->
-              <transition enter-active-class="transition duration-150 ease-out" enter-from-class="scale-75 opacity-0" enter-to-class="scale-100 opacity-100" leave-active-class="transition duration-150 ease-in" leave-from-class="scale-100 opacity-100" leave-to-class="scale-75 opacity-0">
-                <div v-if="addedProductId === product.id" class="absolute inset-0 bg-emerald-600/90 backdrop-blur-xs text-white flex flex-col items-center justify-center p-2 text-center font-bold">
-                  <Check :size="28" class="animate-bounce mb-1" />
-                  <span class="text-xs">Ditambahkan!</span>
-                </div>
-              </transition>
-            </div>
-            <h2 class="font-semibold text-gray-800 text-xs sm:text-sm line-clamp-2 mb-1 group-hover:text-blue-600 transition">{{ product.name }}</h2>
-            <p class="text-blue-600 font-bold text-sm sm:text-base">{{ formatRupiah(product.price_sell) }}</p>
-          </div>
-          <div class="mt-3 pt-2 border-t border-gray-50 flex items-center justify-between">
-            <span class="text-[11px] text-gray-400 flex items-center gap-1"><AlertTriangle v-if="product.qty <= 2" :size="12" class="text-amber-500" />Stok: {{ product.qty }}</span>
-            <span :class="['p-2 rounded-xl transition duration-200', addedProductId === product.id ? 'bg-emerald-600 text-white scale-110' : 'bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white']">
-              <Check v-if="addedProductId === product.id" :size="16" />
-              <Plus v-else :size="16" />
-            </span>
-          </div>
-        </div>
-      </div>
-    </main>
-
-    <!-- MODAL OPSI PRODUK (DESKTOP CARD POPUP) -->
-    <div v-if="showModal && activeProduct" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div class="w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-3xl p-6 shadow-2xl max-h-[85vh] overflow-auto animate-in fade-in zoom-in-95 duration-150">
-        <div class="flex justify-between items-center mb-4">
-          <h3 class="font-black text-base text-zinc-900">Pilih Opsi</h3>
-          <button @click="showModal = false" class="p-2 bg-zinc-100 rounded-xl text-zinc-500 hover:bg-zinc-200 cursor-pointer"><X :size="18"/></button>
-        </div>
-        <div class="flex gap-3 mb-5 items-center bg-zinc-50 p-3 rounded-2xl border">
-          <div class="w-16 h-16 rounded-xl overflow-hidden bg-white shrink-0"><img v-if="activeProduct.imageUrl" :src="getThumbUrl(activeProduct.imageUrl, 200)" class="w-full h-full object-cover" /><div v-else class="w-full h-full flex items-center justify-center text-zinc-300"><Package :size="24"/></div></div>
-          <div><h4 class="font-bold text-sm text-zinc-900 line-clamp-2">{{ activeProduct.name }}</h4><p class="text-xs text-zinc-500 mt-0.5">Stok: {{ activeProduct.qty }} {{ activeProduct.unit || 'PCS' }} • {{ activeProduct.category }}</p></div>
-        </div>
-        <div v-if="productPackages.length > 0" class="space-y-2 mb-4">
-          <label class="text-[10px] font-bold uppercase text-zinc-400">Pilih Paket (urut sesuai kasir)</label>
-          <button @click="selectedPackage = null" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition cursor-pointer', !selectedPackage ? 'border-blue-600 bg-blue-50/50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-800']">
-            <div class="text-left"><p class="text-xs font-bold uppercase">Eceran / Per {{ activeProduct.unit || 'PCS' }}</p><p class="text-sm font-black text-blue-600">{{ formatRupiah(activeProduct.price_sell) }}</p></div>
-            <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', !selectedPackage ? 'border-blue-600 bg-blue-600 text-white' : 'border-zinc-300']"><div v-if="!selectedPackage" class="w-2 h-2 bg-white rounded-full"></div></div>
-          </button>
-          <button v-for="pkg in productPackages" :key="pkg.id" @click="selectedPackage = pkg" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition cursor-pointer', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-50/50 text-emerald-900' : 'border-zinc-200 bg-white text-zinc-800']">
-            <div class="text-left"><p class="text-xs font-bold uppercase">{{ pkg.name }} ({{ pkg.qty_pcs }} {{ activeProduct.unit || 'PCS' }})</p><p class="text-sm font-black text-emerald-600">{{ formatRupiah(pkg.price_sell) }}</p></div>
-            <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-zinc-300']"><div v-if="selectedPackage?.id === pkg.id" class="w-2 h-2 bg-white rounded-full"></div></div>
-          </button>
-        </div>
-        <div v-if="availableServices.length > 0" class="mb-6 space-y-2">
-          <label class="text-[10px] font-bold uppercase text-zinc-400">Opsi Penyajian (Pilih 1) - {{ activeProduct.category }}</label>
-          <button v-for="svc in availableServices" :key="svc.id" @click="toggleService(svc)" :class="['w-full p-3.5 rounded-2xl border flex items-center gap-3 transition text-left cursor-pointer', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-50/50 text-amber-900' : 'border-zinc-200 bg-white text-zinc-700']">
-            <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-500' : 'border-zinc-300']"><div v-if="selectedServices.find(s => s.id === svc.id)" class="w-2 h-2 bg-white rounded-full"></div></div>
-            <div class="flex-1 flex justify-between items-center"><div><p class="text-xs font-bold uppercase">{{ svc.name }}</p><p class="text-[10px] text-zinc-500">Kategori {{ svc.category }}</p></div><p class="text-xs font-black text-amber-600">+ {{ formatRupiah(svc.price) }}</p></div>
-          </button>
-        </div>
-        <div class="bg-zinc-900 text-white p-4 rounded-2xl flex justify-between items-center mb-4"><span class="text-xs font-bold">Total</span><span class="text-lg font-black">{{ formatRupiah(totalPrice) }}</span></div>
-        <button @click="addToCartWithOptions" class="w-full bg-zinc-900 hover:bg-zinc-800 text-white py-4 rounded-2xl font-black text-sm active:scale-95 transition shadow-lg cursor-pointer">Masukkan ke Keranjang</button>
-      </div>
     </div>
-
-    <!-- MODAL PILIH KATEGORI SHEET (DESKTOP CARD POPUP) -->
-    <div v-if="showCategorySheet" class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div class="w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-3xl p-5 pb-8 shadow-2xl max-h-[80vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
-        <div class="w-10 h-1 bg-zinc-200 rounded-full mx-auto mb-4 sm:hidden"></div>
-        <div class="flex justify-between items-center mb-4">
-          <h3 class="font-black text-base text-zinc-900">Pilih Kategori</h3>
-          <button @click="showCategorySheet=false" class="p-2 bg-zinc-100 rounded-xl cursor-pointer"><X :size="18"/></button>
-        </div>
-        <div class="relative mb-4">
-          <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400"/>
-          <input v-model="categorySearch" placeholder="Cari kategori..." class="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-zinc-900"/>
-        </div>
-        <div class="overflow-auto flex-1 space-y-2 pr-1">
-          <button v-for="cat in filteredSheetCategories" :key="cat" @click="selectCategory(cat)" :class="['w-full text-left px-4 py-3.5 rounded-2xl border flex justify-between items-center transition cursor-pointer', productStore.selectedCategory === cat ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-zinc-200 text-zinc-700']">
-            <span class="text-sm font-bold">{{ cat }}</span><span v-if="productStore.selectedCategory === cat" class="text-xs">✓</span>
-          </button>
-        </div>
-        <button @click="showCategorySheet=false" class="w-full mt-4 bg-zinc-900 text-white py-4 rounded-2xl font-black text-sm cursor-pointer">Tutup</button>
-      </div>
-    </div>
-
-    <!-- FLOATING CART BAR (DENGAN ANIMASI BOUNCE) -->
-    <transition enter-active-class="transition duration-300 ease-out" enter-from-class="translate-y-full opacity-0" enter-to-class="translate-y-0 opacity-100" leave-active-class="transition duration-200 ease-in" leave-from-class="translate-y-0 opacity-100" leave-to-class="translate-y-full opacity-0">
-      <div v-if="cartStore.totalItems > 0" class="fixed bottom-4 left-4 right-4 z-40 max-w-xl mx-auto">
-        <div 
-          :class="[
-            'bg-zinc-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between border transition-all duration-300',
-            isCartBouncing ? 'scale-105 border-blue-500 shadow-blue-500/20' : 'border-zinc-800'
-          ]"
-        >
-          <div class="flex items-center gap-3">
-            <div 
-              :class="[
-                'w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center font-bold transition-transform duration-200',
-                isCartBouncing ? 'scale-125 bg-amber-500 text-zinc-950' : ''
-              ]"
-            >
-              {{ cartStore.totalItems }}
-            </div>
-            <div>
-              <p class="text-[11px] text-zinc-400 uppercase font-semibold">Total Belanja</p>
-              <p class="text-sm font-black">{{ formatRupiah(cartStore.totalPrice) }}</p>
-            </div>
-          </div>
-          <router-link to="/cart" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition active:scale-95 shadow-md"><span>Lihat Keranjang</span><ArrowRight :size="16" /></router-link>
-        </div>
-      </div>
-    </transition>
   </div>
 </template>
 
@@ -1677,93 +1398,435 @@ async function handleCheckout() {
   </div>
 </template>
 
-===== src/views/CheckoutSuccess.vue =====
+===== src/views/Catalog.vue =====
 <script setup>
-import { CheckCircle, Home } from 'lucide-vue-next'
+import { ref, onMounted, computed } from 'vue'
+import { useProductStore } from '../stores/productStore'
 import { useCartStore } from '../stores/cartStore'
+import { getThumbUrl } from '../services/cloudinaryService'
+import { formatRupiah } from '../utils/formatters'
+import { buildCartItem } from '../utils/productHelper'
+import { Search, Package, Plus, AlertTriangle, ShoppingCart, ArrowRight, X, Check } from 'lucide-vue-next'
+import { useCartAnimation } from '../composables/useCartAnimation'
+
+const productStore = useProductStore()
+const cartStore = useCartStore()
+
+const showModal = ref(false)
+const activeProduct = ref(null)
+const selectedPackage = ref(null)
+const selectedServices = ref([])
+const productPackages = ref([])
+const availableServices = ref([])
+
+const showCategorySheet = ref(false)
+const categorySearch = ref('')
+
+// ANIMASI OPSI C DARI COMPOSABLE TERPISAH
+const { isCartBouncing, addedProductId, triggerCartAnimation } = useCartAnimation()
+
+onMounted(async () => {
+  await productStore.loadProducts()
+  await cartStore.loadCart()
+})
+
+// KATEGORI POPULER & VISIBLE SEKARANG MURNI DARI PRODUCT STORE (100% FULL SoC)
+const visibleCategories = computed(() => productStore.visibleCategories)
+const remainingCategories = computed(() => productStore.remainingCategories)
+
+const filteredSheetCategories = computed(() => {
+  const all = productStore.categories || []
+  const list = all.filter(c => c.toUpperCase() !== 'SEMUA')
+  if (!categorySearch.value) return list.sort((a,b) => a.localeCompare(b))
+  return list.filter(c => c.toLowerCase().includes(categorySearch.value.toLowerCase())).sort((a,b) => a.localeCompare(b))
+})
+
+function selectCategory(cat) {
+  productStore.selectedCategory = cat
+  showCategorySheet.value = false
+}
+
+async function openProductOptions(product) {
+  let pkgs = []
+  let services = []
+  
+  // SEKARANG MEMANGGIL REPOSITORY VIA STORE (TANPA DIRECT DEXIE DB TOUCH IN VIEW)
+  try {
+    const allPkgs = await productStore.fetchProductPackages(product.id)
+    pkgs = allPkgs.filter(p => {
+      const name = (p.name || '').toUpperCase()
+      const isBelanjaBesar = ['RENCENG','RENCENGAN','DUS','KARDUS'].some(bad => name.includes(bad))
+      const isSatuBatang = (p.qty_pcs || 0) === 1
+      return !isBelanjaBesar && !isSatuBatang
+    }).sort((a,b) => (a.order ?? 999) - (b.order ?? 999))
+  } catch { pkgs = [] }
+
+  try {
+    const allServices = await productStore.fetchAllServices()
+    const getIds = (s) => {
+      if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
+      if (s.productId) return [s.productId]
+      return []
+    }
+    const custom = allServices.filter(s => getIds(s).includes(product.id))
+    if (custom.length > 0) services = custom
+    else {
+      const cat = (product.category || '').toUpperCase()
+      services = allServices.filter(s => { const ids = getIds(s); return ids.length === 0 && (s.category || '').toUpperCase() === cat })
+    }
+  } catch { services = [] }
+
+  const hasOptions = pkgs.length > 0 || services.length > 0
+  if (!hasOptions) {
+    const itemToAdd = buildCartItem(product, [], product.price_sell, null)
+    cartStore.addToCart(itemToAdd, 1)
+    triggerCartAnimation(product.id)
+    return
+  }
+  activeProduct.value = product
+  selectedPackage.value = null
+  selectedServices.value = []
+  productPackages.value = pkgs
+  availableServices.value = services
+  showModal.value = true
+}
+
+const totalPrice = computed(() => {
+  if (!activeProduct.value) return 0
+  let price = activeProduct.value.price_sell
+  if (selectedPackage.value) price = selectedPackage.value.price_sell
+  for (const svc of selectedServices.value) price += Number(svc.price) || 0
+  return price
+})
+
+function toggleService(svc) {
+  const exists = selectedServices.value.find(s => s.id === svc.id)
+  if (exists) selectedServices.value = []
+  else selectedServices.value = [svc]
+}
+
+function addToCartWithOptions() {
+  if (!activeProduct.value) return
+  const currentId = activeProduct.value.id
+  const itemToAdd = buildCartItem(activeProduct.value, selectedServices.value, totalPrice.value, selectedPackage.value)
+  cartStore.addToCart(itemToAdd, 1)
+  triggerCartAnimation(currentId)
+  showModal.value = false
+  activeProduct.value = null
+}
+
+// BUAT DEBUG GONTA-GANTI CEPAT DI CONSOLE
+window.setPinnedCategories = (arr) => {
+  localStorage.setItem('sinar_pagi_pinned_categories', JSON.stringify(arr))
+  location.reload()
+}
+window.clearPinnedCategories = () => {
+  localStorage.removeItem('sinar_pagi_pinned_categories')
+  location.reload()
+}
+</script>
+
+<template>
+  <div class="min-h-screen bg-gray-50 pb-28">
+    <!-- HEADER STICKY (RESPONSIF TABLET & DESKTOP) -->
+    <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-gray-100 px-4 md:px-6 lg:px-8 py-3.5 shadow-xs">
+      <div class="max-w-7xl mx-auto flex flex-col gap-3">
+        
+        <!-- BARIS ATAS: LOGO/BRAND + SEARCH + TOMBOL KERANJANG DESKTOP -->
+        <div class="flex items-center justify-between gap-3 md:gap-6">
+          <div class="flex items-center gap-3 shrink-0">
+            <div class="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black text-sm shadow-xs">
+              SP
+            </div>
+            <div>
+              <h1 class="text-lg md:text-xl font-bold text-gray-900 tracking-tight leading-none">Warung Sinar Pagi</h1>
+              <p class="text-[11px] font-bold text-gray-400 mt-0.5">Katalog & Order Online</p>
+            </div>
+          </div>
+
+          <!-- SEARCH BAR DI KANAN LOGO SAAT TABLET/DESKTOP -->
+          <div class="relative w-full max-w-xl hidden md:block">
+            <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Search :size="18" /></span>
+            <input v-model="productStore.searchQuery" type="text" placeholder="Cari barang di warung..." class="w-full pl-10 pr-10 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 placeholder-gray-400 outline-none transition" />
+            <button v-if="productStore.searchQuery" @click="productStore.searchQuery = ''" class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 active:scale-90 transition"><X :size="18" /></button>
+          </div>
+
+          <!-- TOMBOL KERANJANG HEADER -->
+          <router-link 
+            to="/cart" 
+            :class="[
+              'relative p-2.5 md:px-4 md:py-2.5 rounded-xl transition-all duration-200 shrink-0 flex items-center gap-2 font-bold text-sm cursor-pointer select-none',
+              isCartBouncing ? 'bg-blue-600 text-white scale-110 shadow-lg' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+            ]"
+          >
+            <ShoppingCart :size="20" :class="isCartBouncing ? 'animate-bounce' : ''" />
+            <span class="hidden md:inline">Keranjang</span>
+            <span 
+              v-if="cartStore.totalItems > 0" 
+              :class="[
+                'text-xs px-2 py-0.5 rounded-full font-bold shadow-xs transition-transform duration-200',
+                isCartBouncing ? 'bg-white text-blue-600 scale-125' : 'bg-red-500 text-white'
+              ]"
+            >
+              {{ cartStore.totalItems }}
+            </span>
+          </router-link>
+        </div>
+
+        <!-- SEARCH BAR UNTUK HP (< md) -->
+        <div class="relative w-full md:hidden">
+          <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400"><Search :size="18" /></span>
+          <input v-model="productStore.searchQuery" type="text" placeholder="Cari barang di warung..." class="w-full pl-10 pr-10 py-2.5 bg-gray-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-blue-500 text-gray-800 placeholder-gray-400 outline-none transition" />
+          <button v-if="productStore.searchQuery" @click="productStore.searchQuery = ''" class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-gray-400 hover:text-gray-600 active:scale-90 transition"><X :size="18" /></button>
+        </div>
+
+        <!-- CHIP KATEGORI (SCROLL HORIZONTAL CONTAINER) -->
+        <div class="flex gap-2 overflow-x-auto pb-1 no-scrollbar items-center">
+          <button v-for="cat in visibleCategories" :key="cat" @click="productStore.selectedCategory = cat" :class="['px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition shrink-0 cursor-pointer', productStore.selectedCategory === cat ? 'bg-blue-600 text-white shadow-xs' : 'bg-gray-100 text-gray-600 hover:bg-gray-200']">{{ cat }}</button>
+          <button v-if="remainingCategories.length > 0" @click="showCategorySheet=true" :class="['px-4 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition shrink-0 border border-dashed cursor-pointer', productStore.categories.some(c => remainingCategories.includes(c) && c === productStore.selectedCategory) ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-600 border-zinc-300']">Lainnya ({{ remainingCategories.length }})</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN KONTEN: GRID RESPONSIF 2 HP, 3 TABLET, 4-6 DESKTOP -->
+    <main class="max-w-7xl mx-auto p-4 md:p-6">
+      <div v-if="productStore.loading" class="flex justify-center items-center py-20"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div></div>
+      <div v-else-if="productStore.filteredProducts.length === 0" class="text-center py-20 bg-white rounded-3xl border border-gray-100 shadow-xs"><Package :size="48" class="mx-auto text-gray-300 mb-2" /><p class="text-gray-500 font-medium">Produk tidak ditemukan</p></div>
+      <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4 md:gap-5">
+        <div v-for="product in productStore.filteredProducts" :key="product.id" @click="openProductOptions(product)" class="bg-white rounded-2xl p-3 md:p-3.5 shadow-xs border border-gray-100 flex flex-col justify-between hover:shadow-md hover:border-blue-200 transition cursor-pointer group">
+          <div>
+            <div class="relative w-full aspect-square bg-gray-100 rounded-xl overflow-hidden mb-3">
+              <img v-if="product.imageUrl" :src="getThumbUrl(product.imageUrl, 300)" :alt="product.name" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+              <div v-else class="w-full h-full flex items-center justify-center text-gray-400"><Package :size="32" /></div>
+              <span class="absolute top-2 left-2 bg-black/60 backdrop-blur-xs text-white text-[10px] px-2 py-0.5 rounded-md font-medium">{{ product.category || 'UMUM' }}</span>
+              
+              <!-- POP-UP MICRO-TOAST PADA KARTU PRODUK (OPSI C) -->
+              <transition enter-active-class="transition duration-150 ease-out" enter-from-class="scale-75 opacity-0" enter-to-class="scale-100 opacity-100" leave-active-class="transition duration-150 ease-in" leave-from-class="scale-100 opacity-100" leave-to-class="scale-75 opacity-0">
+                <div v-if="addedProductId === product.id" class="absolute inset-0 bg-emerald-600/90 backdrop-blur-xs text-white flex flex-col items-center justify-center p-2 text-center font-bold">
+                  <Check :size="28" class="animate-bounce mb-1" />
+                  <span class="text-xs">Ditambahkan!</span>
+                </div>
+              </transition>
+            </div>
+            <h2 class="font-semibold text-gray-800 text-xs sm:text-sm line-clamp-2 mb-1 group-hover:text-blue-600 transition">{{ product.name }}</h2>
+            <p class="text-blue-600 font-bold text-sm sm:text-base">{{ formatRupiah(product.price_sell) }}</p>
+          </div>
+          <div class="mt-3 pt-2 border-t border-gray-50 flex items-center justify-between">
+            <span class="text-[11px] text-gray-400 flex items-center gap-1"><AlertTriangle v-if="product.qty <= 2" :size="12" class="text-amber-500" />Stok: {{ product.qty }}</span>
+            <span :class="['p-2 rounded-xl transition duration-200', addedProductId === product.id ? 'bg-emerald-600 text-white scale-110' : 'bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white']">
+              <Check v-if="addedProductId === product.id" :size="16" />
+              <Plus v-else :size="16" />
+            </span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- MODAL OPSI PRODUK (DESKTOP CARD POPUP) -->
+    <div v-if="showModal && activeProduct" class="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div class="w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-3xl p-6 shadow-2xl max-h-[85vh] overflow-auto animate-in fade-in zoom-in-95 duration-150">
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="font-black text-base text-zinc-900">Pilih Opsi</h3>
+          <button @click="showModal = false" class="p-2 bg-zinc-100 rounded-xl text-zinc-500 hover:bg-zinc-200 cursor-pointer"><X :size="18"/></button>
+        </div>
+        <div class="flex gap-3 mb-5 items-center bg-zinc-50 p-3 rounded-2xl border">
+          <div class="w-16 h-16 rounded-xl overflow-hidden bg-white shrink-0"><img v-if="activeProduct.imageUrl" :src="getThumbUrl(activeProduct.imageUrl, 200)" class="w-full h-full object-cover" /><div v-else class="w-full h-full flex items-center justify-center text-zinc-300"><Package :size="24"/></div></div>
+          <div><h4 class="font-bold text-sm text-zinc-900 line-clamp-2">{{ activeProduct.name }}</h4><p class="text-xs text-zinc-500 mt-0.5">Stok: {{ activeProduct.qty }} {{ activeProduct.unit || 'PCS' }} • {{ activeProduct.category }}</p></div>
+        </div>
+        <div v-if="productPackages.length > 0" class="space-y-2 mb-4">
+          <label class="text-[10px] font-bold uppercase text-zinc-400">Pilih Paket (urut sesuai kasir)</label>
+          <button @click="selectedPackage = null" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition cursor-pointer', !selectedPackage ? 'border-blue-600 bg-blue-50/50 text-blue-900' : 'border-zinc-200 bg-white text-zinc-800']">
+            <div class="text-left"><p class="text-xs font-bold uppercase">Eceran / Per {{ activeProduct.unit || 'PCS' }}</p><p class="text-sm font-black text-blue-600">{{ formatRupiah(activeProduct.price_sell) }}</p></div>
+            <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', !selectedPackage ? 'border-blue-600 bg-blue-600 text-white' : 'border-zinc-300']"><div v-if="!selectedPackage" class="w-2 h-2 bg-white rounded-full"></div></div>
+          </button>
+          <button v-for="pkg in productPackages" :key="pkg.id" @click="selectedPackage = pkg" :class="['w-full p-3.5 rounded-2xl border flex items-center justify-between transition cursor-pointer', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-50/50 text-emerald-900' : 'border-zinc-200 bg-white text-zinc-800']">
+            <div class="text-left"><p class="text-xs font-bold uppercase">{{ pkg.name }} ({{ pkg.qty_pcs }} {{ activeProduct.unit || 'PCS' }})</p><p class="text-sm font-black text-emerald-600">{{ formatRupiah(pkg.price_sell) }}</p></div>
+            <div :class="['w-5 h-5 rounded-full border flex items-center justify-center', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-zinc-300']"><div v-if="selectedPackage?.id === pkg.id" class="w-2 h-2 bg-white rounded-full"></div></div>
+          </button>
+        </div>
+        <div v-if="availableServices.length > 0" class="mb-6 space-y-2">
+          <label class="text-[10px] font-bold uppercase text-zinc-400">Opsi Penyajian (Pilih 1) - {{ activeProduct.category }}</label>
+          <button v-for="svc in availableServices" :key="svc.id" @click="toggleService(svc)" :class="['w-full p-3.5 rounded-2xl border flex items-center gap-3 transition text-left cursor-pointer', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-50/50 text-amber-900' : 'border-zinc-200 bg-white text-zinc-700']">
+            <div :class="['w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0', selectedServices.find(s => s.id === svc.id) ? 'border-amber-500 bg-amber-500' : 'border-zinc-300']"><div v-if="selectedServices.find(s => s.id === svc.id)" class="w-2 h-2 bg-white rounded-full"></div></div>
+            <div class="flex-1 flex justify-between items-center"><div><p class="text-xs font-bold uppercase">{{ svc.name }}</p><p class="text-[10px] text-zinc-500">Kategori {{ svc.category }}</p></div><p class="text-xs font-black text-amber-600">+ {{ formatRupiah(svc.price) }}</p></div>
+          </button>
+        </div>
+        <div class="bg-zinc-900 text-white p-4 rounded-2xl flex justify-between items-center mb-4"><span class="text-xs font-bold">Total</span><span class="text-lg font-black">{{ formatRupiah(totalPrice) }}</span></div>
+        <button @click="addToCartWithOptions" class="w-full bg-zinc-900 hover:bg-zinc-800 text-white py-4 rounded-2xl font-black text-sm active:scale-95 transition shadow-lg cursor-pointer">Masukkan ke Keranjang</button>
+      </div>
+    </div>
+
+    <!-- MODAL PILIH KATEGORI SHEET (DESKTOP CARD POPUP) -->
+    <div v-if="showCategorySheet" class="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div class="w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-3xl p-5 pb-8 shadow-2xl max-h-[80vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
+        <div class="w-10 h-1 bg-zinc-200 rounded-full mx-auto mb-4 sm:hidden"></div>
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="font-black text-base text-zinc-900">Pilih Kategori</h3>
+          <button @click="showCategorySheet=false" class="p-2 bg-zinc-100 rounded-xl cursor-pointer"><X :size="18"/></button>
+        </div>
+        <div class="relative mb-4">
+          <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400"/>
+          <input v-model="categorySearch" placeholder="Cari kategori..." class="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-zinc-900"/>
+        </div>
+        <div class="overflow-auto flex-1 space-y-2 pr-1">
+          <button v-for="cat in filteredSheetCategories" :key="cat" @click="selectCategory(cat)" :class="['w-full text-left px-4 py-3.5 rounded-2xl border flex justify-between items-center transition cursor-pointer', productStore.selectedCategory === cat ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-zinc-200 text-zinc-700']">
+            <span class="text-sm font-bold">{{ cat }}</span><span v-if="productStore.selectedCategory === cat" class="text-xs">✓</span>
+          </button>
+        </div>
+        <button @click="showCategorySheet=false" class="w-full mt-4 bg-zinc-900 text-white py-4 rounded-2xl font-black text-sm cursor-pointer">Tutup</button>
+      </div>
+    </div>
+
+    <!-- FLOATING CART BAR (DENGAN ANIMASI BOUNCE) -->
+    <transition enter-active-class="transition duration-300 ease-out" enter-from-class="translate-y-full opacity-0" enter-to-class="translate-y-0 opacity-100" leave-active-class="transition duration-200 ease-in" leave-from-class="translate-y-0 opacity-100" leave-to-class="translate-y-full opacity-0">
+      <div v-if="cartStore.totalItems > 0" class="fixed bottom-4 left-4 right-4 z-40 max-w-xl mx-auto">
+        <div 
+          :class="[
+            'bg-zinc-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between border transition-all duration-300',
+            isCartBouncing ? 'scale-105 border-blue-500 shadow-blue-500/20' : 'border-zinc-800'
+          ]"
+        >
+          <div class="flex items-center gap-3">
+            <div 
+              :class="[
+                'w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center font-bold transition-transform duration-200',
+                isCartBouncing ? 'scale-125 bg-amber-500 text-zinc-950' : ''
+              ]"
+            >
+              {{ cartStore.totalItems }}
+            </div>
+            <div>
+              <p class="text-[11px] text-zinc-400 uppercase font-semibold">Total Belanja</p>
+              <p class="text-sm font-black">{{ formatRupiah(cartStore.totalPrice) }}</p>
+            </div>
+          </div>
+          <router-link to="/cart" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition active:scale-95 shadow-md"><span>Lihat Keranjang</span><ArrowRight :size="16" /></router-link>
+        </div>
+      </div>
+    </transition>
+  </div>
+</template>
+
+===== src/views/Cart.vue =====
+<script setup>
 import { onMounted } from 'vue'
+import { useCartStore } from '../stores/cartStore'
+import { getThumbUrl } from '../services/cloudinaryService'
+import { formatRupiah } from '../utils/formatters'
+import { ArrowLeft, Plus, Minus, Trash2, ShoppingBag, ArrowRight } from 'lucide-vue-next'
 
 const cartStore = useCartStore()
 
 onMounted(async () => {
-  await cartStore.clearCart()
+  await cartStore.loadCart()
 })
 </script>
 
 <template>
-  <div class="min-h-screen bg-gray-50 flex items-center justify-center p-4 sm:p-6 md:p-8">
-    <!-- CARD UTAMA KONTINER DENGAN ANIMASI FADE/ZOOM DAN TAMPILAN RAPI DI LAYAR LEBAR -->
-    <div class="bg-white rounded-3xl p-6 sm:p-10 shadow-xl border border-gray-100 max-w-md w-full text-center flex flex-col items-center gap-5 animate-in fade-in zoom-in-95 duration-200">
-      
-      <!-- ICON CHECKMARK BERWARNA HIJAU -->
-      <div class="w-20 h-20 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center border border-emerald-100 shadow-inner">
-        <CheckCircle :size="44" />
+  <div class="min-h-screen bg-gray-50 pb-28">
+    <!-- HEADER STICKY RESPONSIF -->
+    <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-gray-100 px-4 md:px-6 lg:px-8 py-3.5 shadow-xs">
+      <div class="max-w-4xl mx-auto flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <router-link to="/" class="p-2 text-gray-600 hover:bg-gray-100 rounded-xl transition cursor-pointer">
+            <ArrowLeft :size="20" />
+          </router-link>
+          <h1 class="text-xl font-bold text-gray-900 tracking-tight">Keranjang Belanja</h1>
+        </div>
+        <span class="text-sm text-gray-500 font-bold bg-gray-100 px-3 py-1 rounded-full">{{ cartStore.totalItems }} item</span>
+      </div>
+    </header>
+
+    <!-- MAIN CONTENT KONTINER DI TENGAH LAYAR -->
+    <main class="max-w-4xl mx-auto p-4 md:p-6">
+      <!-- TAMPILAN JIKA KERANJANG KOSONG -->
+      <div v-if="cartStore.items.length === 0" class="text-center py-20 flex flex-col items-center bg-white rounded-3xl border border-gray-100 p-8 shadow-xs">
+        <div class="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4 text-gray-400">
+          <ShoppingBag :size="40" />
+        </div>
+        <h2 class="text-lg font-bold text-gray-800">Keranjang Belanja Kosong</h2>
+        <p class="text-sm text-gray-500 font-medium mb-6 mt-1 max-w-sm">Kamu belum menambahkan produk apa pun ke keranjang belanja.</p>
+        <router-link to="/" class="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition shadow-md active:scale-95 cursor-pointer">
+          Mulai Belanja
+        </router-link>
       </div>
 
-      <!-- TEKS INFORMASI SUKSES -->
-      <div class="space-y-2">
-        <h1 class="text-2xl sm:text-3xl font-black text-gray-900 tracking-tight">Pesanan Berhasil Dikirim!</h1>
-        <p class="text-xs sm:text-sm text-gray-500 leading-relaxed font-medium">
-          Pesanan kamu sudah diteruskan via WhatsApp ke Warung Sinar Pagi. Admin kami akan segera memproses dan merespons pesananmu.
-        </p>
+      <!-- DAFTAR ITEM KERANJANG -->
+      <div v-else class="flex flex-col gap-4">
+        <div class="bg-white rounded-2xl p-4 md:p-5 shadow-xs border border-gray-100 flex flex-col gap-4">
+          <div v-for="item in cartStore.items" :key="item.id" class="flex items-center justify-between gap-3 sm:gap-4 pb-4 border-b border-gray-100 last:border-0 last:pb-0">
+            <!-- DETAIL INFORMASI ITEM -->
+            <div class="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
+              <div class="w-16 h-16 sm:w-20 sm:h-20 bg-gray-100 rounded-2xl overflow-hidden shrink-0 border border-gray-100">
+                <img v-if="item.imageUrl" :src="getThumbUrl(item.imageUrl, 200)" :alt="item.name" class="w-full h-full object-cover" />
+                <div v-else class="w-full h-full flex items-center justify-center text-gray-400">
+                  <ShoppingBag :size="24" />
+                </div>
+              </div>
+              <div class="min-w-0 flex-1">
+                <h2 class="font-bold text-gray-800 text-sm sm:text-base truncate">{{ item.name }}</h2>
+                <p v-if="item.note" class="text-[11px] sm:text-xs text-amber-600 font-bold mt-0.5">+ {{ item.note }}</p>
+                <p class="text-blue-600 font-black text-sm sm:text-base mt-1">{{ formatRupiah(item.price_sell) }}</p>
+              </div>
+            </div>
+
+            <!-- KONTROL QTY & HAPUS -->
+            <div class="flex items-center gap-2 sm:gap-4 shrink-0">
+              <div class="flex items-center bg-gray-100/80 border border-gray-200/60 rounded-xl p-1 gap-1 sm:gap-2">
+                <button @click="cartStore.updateQty(item.id, item.qty - 1)" class="p-1.5 text-gray-600 hover:bg-white rounded-lg transition shadow-xs cursor-pointer active:scale-95">
+                  <Minus :size="14" />
+                </button>
+                <span class="text-sm font-black text-gray-800 w-6 text-center select-none">{{ item.qty }}</span>
+                <button @click="cartStore.updateQty(item.id, item.qty + 1)" class="p-1.5 text-gray-600 hover:bg-white rounded-lg transition shadow-xs cursor-pointer active:scale-95">
+                  <Plus :size="14" />
+                </button>
+              </div>
+
+              <button @click="cartStore.removeFromCart(item.id)" class="p-2 text-red-500 hover:bg-red-50 rounded-xl transition cursor-pointer active:scale-95" title="Hapus Item">
+                <Trash2 :size="18" />
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
+    </main>
 
-      <!-- TOMBOL KEMBALI KE KATALOG -->
-      <router-link 
-        to="/" 
-        class="mt-2 w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer"
-      >
-        <Home :size="18" />
-        <span>Kembali ke Katalog</span>
-      </router-link>
-
-    </div>
+    <!-- FOOTER STICKY DENGAN MAX-WIDTH RAPI DI TABLET & DESKTOP -->
+    <footer v-if="cartStore.items.length > 0" class="fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-gray-200 p-4 shadow-2xl z-30">
+      <div class="max-w-4xl mx-auto flex items-center justify-between gap-4">
+        <div>
+          <p class="text-xs text-gray-500 font-bold uppercase tracking-wider">Total Pembayaran</p>
+          <p class="text-lg sm:text-xl font-black text-blue-600">{{ formatRupiah(cartStore.totalPrice) }}</p>
+        </div>
+        <router-link to="/checkout" class="flex items-center gap-2 px-6 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition shadow-md active:scale-95 cursor-pointer">
+          <span>Lanjut Checkout</span>
+          <ArrowRight :size="18" />
+        </router-link>
+      </div>
+    </footer>
   </div>
 </template>
 
-===== src/config/catalogCategory.js =====
-export const PINNED_CATEGORIES = [
-  'MIE',
-  'OBAT',
-  'SNACK 2K',
-  'KOPI SACHET',
-  'MINUMAN BOTOL',
-  // tambah lagi kalo mau 5: 'MIE'
-]
+===== src/main.js =====
+import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+import App from './App.vue'
+import router from './router'
+import './style.css'
 
-export const VISIBLE_COUNT = 4 // mau tampil 5 ganti jadi 5
-===== src/composables/useCartAnimation.js =====
-import { ref } from 'vue'
+const app = createApp(App)
 
-export function useCartAnimation() {
-  const isCartBouncing = ref(false)
-  const addedProductId = ref(null)
+app.use(createPinia())
+app.use(router)
 
-  /**
-   * Menjalankan animasi micro-feedback di tombol + bounce pada keranjang
-   * @param {String|Number} productId - ID produk yang baru ditambahkan
-   * @param {Number} duration - Durasi animasi dalam ms
-   */
-  function triggerCartAnimation(productId = null, duration = 600) {
-    // 1. Set ID produk untuk menampilkan badge / micro-toast "✓ Ditambahkan"
-    if (productId) {
-      addedProductId.value = productId
-    }
+app.mount('#app')
 
-    // 2. Trigger efek bounce pada keranjang
-    isCartBouncing.value = true
+===== src/App.vue =====
+<script setup>
+// Root Component Warung Sinar Pagi Web
+</script>
 
-    // 3. Reset state setelah durasi selesai
-    setTimeout(() => {
-      isCartBouncing.value = false
-      addedProductId.value = null
-    }, duration)
-  }
-
-  return {
-    isCartBouncing,
-    addedProductId,
-    triggerCartAnimation
-  }
-}
+<template>
+  <router-view />
+</template>
 

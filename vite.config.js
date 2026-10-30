@@ -39,6 +39,9 @@ export default defineConfig({
         ]
       },
       workbox: {
+        mode: 'development', // INI FIX FINAL BIAR GAK ERROR TERSER DI ACODE
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,xml,txt}'],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/res\.cloudinary\.com\/.*/i,
@@ -61,7 +64,7 @@ export default defineConfig({
               cacheName: 'firestore-cache',
               expiration: {
                 maxEntries: 100,
-                maxAgeSeconds: 15 * 60 // 15 menit - sesuai cache sinar_pagi_last_sync lu
+                maxAgeSeconds: 15 * 60
               },
               cacheableResponse: {
                 statuses: [0, 200]
@@ -72,4 +75,8 @@ export default defineConfig({
       }
     })
   ],
+  build: {
+    minify: 'esbuild',
+    chunkSizeWarningLimit: 1000,
+  }
 })

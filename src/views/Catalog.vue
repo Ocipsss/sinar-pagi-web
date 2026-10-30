@@ -7,9 +7,21 @@ import { formatRupiah } from '../utils/formatters'
 import { buildCartItem } from '../utils/productHelper'
 import { Search, Package, Plus, AlertTriangle, ShoppingCart, ArrowRight, X, Check } from 'lucide-vue-next'
 import { useCartAnimation } from '../composables/useCartAnimation'
+import { makeProductSlug } from '../utils/slugify'
+import { useHead } from '@vueuse/head'
 
 const productStore = useProductStore()
 const cartStore = useCartStore()
+
+// SEO HEAD TAHAP 4 - 0% NYENTUH FIREBASE
+useHead({
+  title: 'Warung Sinar Pagi Ciheleut Bogor - Warkop & Sembako Diantar 2rb',
+  meta: [
+    { name: 'description', content: 'Warkop & toko sembako di Jl. Jagung Ujung No.38 RT01/09 Ciheleut, Bogor Timur dekat Universitas Pakuan & Komplek IPB. Sedia Indomie rebus/goreng, gorengan, es cekek, pop ice, kopi, gas galon. Buka 09.00-21.00, diantar 200m cuma Rp2.000 COD/QRIS.' },
+    { property: 'og:title', content: 'Warung Sinar Pagi Ciheleut Bogor - Warkop & Sembako Diantar 2rb' },
+    { property: 'og:description', content: 'Pesan Indomie, kopi, snack & sembako dari Warung Sinar Pagi Ciheleut. Bisa makan di tempat atau diantar 200m cuma 2rb.' }
+  ]
+})
 
 const showModal = ref(false)
 const activeProduct = ref(null)
@@ -138,7 +150,7 @@ window.clearPinnedCategories = () => {
               SP
             </div>
             <div>
-              <h1 class="text-lg md:text-xl font-bold text-gray-900 tracking-tight leading-none">Warung Sinar Pagi</h1>
+              <div class="text-lg md:text-xl font-bold text-gray-900 tracking-tight leading-none">Warung Sinar Pagi</div>
               <p class="text-[11px] font-bold text-gray-400 mt-0.5">Katalog & Order Online</p>
             </div>
           </div>
@@ -187,8 +199,17 @@ window.clearPinnedCategories = () => {
       </div>
     </header>
 
+    <!-- COMPACT STRIP SEO - TAHAP 4 VERSI HEMAT TEMPAT -->
+    <section class="max-w-7xl mx-auto px-4 md:px-6 lg:px-8 pt-3 pb-1">
+      <div class="flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
+        <h1 class="font-black text-gray-900 text-xs md:text-sm tracking-tight leading-tight">Warung Sinar Pagi Ciheleut Bogor - Warkop & Sembako Diantar 2rb</h1>
+        <span class="hidden md:inline-flex items-center gap-2">• Jl. Jagung Ujung No.38 RT01/09 • Buka 09.00-21.00 • Antar 200m Rp2rb • COD/QRIS</span>
+        <a href="#produk" class="md:hidden ml-auto text-[11px] font-bold text-blue-600 hover:text-blue-700">Lihat Produk ↓</a>
+      </div>
+    </section>
+
     <!-- MAIN KONTEN: GRID RESPONSIF 2 HP, 3 TABLET, 4-6 DESKTOP -->
-    <main class="max-w-7xl mx-auto p-4 md:p-6">
+    <main id="produk" class="max-w-7xl mx-auto p-4 md:p-6">
       <div v-if="productStore.loading" class="flex justify-center items-center py-20"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div></div>
       <div v-else-if="productStore.filteredProducts.length === 0" class="text-center py-20 bg-white rounded-3xl border border-gray-100 shadow-xs"><Package :size="48" class="mx-auto text-gray-300 mb-2" /><p class="text-gray-500 font-medium">Produk tidak ditemukan</p></div>
       <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4 md:gap-5">
@@ -207,7 +228,12 @@ window.clearPinnedCategories = () => {
                 </div>
               </transition>
             </div>
-            <h2 class="font-semibold text-gray-800 text-xs sm:text-sm line-clamp-2 mb-1 group-hover:text-blue-600 transition">{{ product.name }}</h2>
+            <!-- TAHAP 6: NAMA JADI LINK KE DETAIL PRODUK (TETAP H3 UNTUK SEO) -->
+            <h3 class="font-semibold text-gray-800 text-xs sm:text-sm line-clamp-2 mb-1 group-hover:text-blue-600 transition">
+              <router-link :to="`/produk/${makeProductSlug(product)}`" @click.stop class="hover:underline block">
+                {{ product.name }}
+              </router-link>
+            </h3>
             <p class="text-blue-600 font-bold text-sm sm:text-base">{{ formatRupiah(product.price_sell) }}</p>
           </div>
           <div class="mt-3 pt-2 border-t border-gray-50 flex items-center justify-between">
@@ -252,6 +278,7 @@ window.clearPinnedCategories = () => {
         </div>
         <div class="bg-zinc-900 text-white p-4 rounded-2xl flex justify-between items-center mb-4"><span class="text-xs font-bold">Total</span><span class="text-lg font-black">{{ formatRupiah(totalPrice) }}</span></div>
         <button @click="addToCartWithOptions" class="w-full bg-zinc-900 hover:bg-zinc-800 text-white py-4 rounded-2xl font-black text-sm active:scale-95 transition shadow-lg cursor-pointer">Masukkan ke Keranjang</button>
+        <router-link :to="`/produk/${makeProductSlug(activeProduct)}`" class="w-full mt-3 block text-center text-xs font-bold text-blue-600 hover:text-blue-700 py-2">Lihat Halaman Detail →</router-link>
       </div>
     </div>
 
