@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "@vueuse/head": "^2.0.0",
     "dexie": "^4.0.10",
     "firebase": "^11.3.0",
