@@ -4,4 +4,4 @@ Disallow: /cart
 Disallow: /checkout
 Disallow: /checkout-success
 
-Sitemap: https://catalog-sinarpagi.vercel.app/sitemap.xml
+Sitemap: https://warungsinarpagi.my.id/sitemap.xml

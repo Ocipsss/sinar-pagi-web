@@ -91,7 +91,7 @@ onMounted(async () => {
   // SEO DYNAMIC
   const title = `${found.name} - Warung Sinar Pagi Ciheleut Bogor | Warkop & Sembako Diantar 2rb`
   const desc = `Beli ${found.name} di Warung Sinar Pagi Jl. Jagung Ujung No.38 Ciheleut Bogor Timur. ${found.category || ''} - Stok ready, buka 09.00-21.00, diantar 200m cuma Rp2.000 COD/QRIS. Harga ${formatRupiah(found.price_sell)}`
-  const url = `https://catalog-sinarpagi.vercel.app/produk/${makeProductSlug(found)}`
+  const url = `https://warungsinarpagi.my.id/produk/${makeProductSlug(found)}`
   const image = found.imageUrl ? getThumbUrl(found.imageUrl, 600) : ''
 
   useHead({
@@ -143,8 +143,8 @@ onMounted(async () => {
           "@context": "https://schema.org",
           "@type": "BreadcrumbList",
           "itemListElement": [
-            { "@type": "ListItem", "position": 1, "name": "Beranda", "item": "https://catalog-sinarpagi.vercel.app/" },
-            { "@type": "ListItem", "position": 2, "name": found.category || "Produk", "item": `https://catalog-sinarpagi.vercel.app/#${found.category}` },
+            { "@type": "ListItem", "position": 1, "name": "Beranda", "item": "https://warungsinarpagi.my.id/" },
+            { "@type": "ListItem", "position": 2, "name": found.category || "Produk", "item": `https://warungsinarpagi.my.id/#${found.category}` },
             { "@type": "ListItem", "position": 3, "name": found.name }
           ]
         })
