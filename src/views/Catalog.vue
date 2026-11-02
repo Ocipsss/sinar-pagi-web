@@ -143,16 +143,14 @@ window.clearPinnedCategories = () => {
     <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-gray-100 px-4 md:px-6 lg:px-8 py-3.5 shadow-xs">
       <div class="max-w-7xl mx-auto flex flex-col gap-3">
         
-        <!-- BARIS ATAS: LOGO/BRAND + SEARCH + TOMBOL KERANJANG DESKTOP -->
+        <!-- BARIS ATAS: LOGO HORIZONTAL + SEARCH + TOMBOL KERANJANG DESKTOP -->
         <div class="flex items-center justify-between gap-3 md:gap-6">
           <div class="flex items-center gap-3 shrink-0">
-            <div class="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black text-sm shadow-xs">
-              SP
-            </div>
-            <div>
-              <div class="text-lg md:text-xl font-bold text-gray-900 tracking-tight leading-none">Warung Sinar Pagi</div>
-              <p class="text-[11px] font-bold text-gray-400 mt-0.5">Katalog & Order Online</p>
-            </div>
+            <img 
+              src="/sinar-pagi-horizontal-color.svg" 
+              alt="Warung Sinar Pagi" 
+              class="h-8 md:h-10 w-auto object-contain"
+            />
           </div>
 
           <!-- SEARCH BAR DI KANAN LOGO SAAT TABLET/DESKTOP -->
