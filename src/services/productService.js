@@ -1,8 +1,10 @@
-// src/services/productService.js - SUPER EKSTRIM DELTA 1 BARANG = 1 READ
-import { collection, getDocs, query, where, doc, getDoc } from 'firebase/firestore'
-import { db as firestoreDb } from './firebase.js'
+// src/services/productService.js - SUPER EKSTRIM DELTA 1 BARANG = 1 ROW (VERSI SUPABASE)
+// MAPPING 1:1 dari Firebase asli lo, cuma ganti firestoreDb -> supabase
+// Logic: VERSION_KEY, LAST_PULL_KEY, CACHE HIT, DELTA, FULL SYNC tetep sama
+
 import { productRepo } from '../db/repositories/productRepository.js'
 import { db } from '../db/index.js'
+import { supabase } from './supabase.js'
 
 const getServiceIds = (s) => {
   if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
@@ -20,20 +22,19 @@ export const productService = {
         return await productRepo.getPublished()
       }
 
-      // 1. CEK VERSI DULU - CUMA 1 READ
+      // 1. CEK VERSI DULU - CUMA 1 ROW (dulu 1 READ)
       let remoteVersion = null
       try {
-        const metaRef = doc(firestoreDb, 'meta', 'catalog')
-        const metaSnap = await getDoc(metaRef)
-        if (metaSnap.exists()) {
-          const metaData = metaSnap.data()
-          remoteVersion = metaData.version || metaData.updatedAt || null
+        // GANTI: dulu doc(firestoreDb, 'meta', 'catalog') -> sekarang ambil max updated_at dari products
+        const { data, error } = await supabase.from('products').select('updated_at').order('updated_at', { ascending: false }).limit(1)
+        if (!error && data && data.length) {
+          remoteVersion = data[0].updated_at
         }
       } catch (e) {
         console.warn('[ProductService] Gagal cek meta version', e)
       }
 
-      // 2. KALO VERSI SAMA - 0 READS TAMBAHAN
+      // 2. KALO VERSI SAMA - 0 ROWS TAMBAHAN
       if (remoteVersion) {
         try {
           const localVersion = localStorage.getItem(VERSION_KEY)
@@ -49,40 +50,41 @@ export const productService = {
 
       const lastPull = localStorage.getItem(LAST_PULL_KEY)
 
-      // 3. DELTA SYNC - CUMA YANG BERUBAH DOANG (1 BARANG = 1 READ)
+      // 3. DELTA SYNC - CUMA YANG BERUBAH DOANG (1 BARANG = 1 ROW)
       if (lastPull && remoteVersion) {
         console.log(`[ProductService] DELTA SYNC since ${lastPull}...`)
         let totalReads = 0
 
         // Produk yang berubah
         try {
-          const qProd = query(collection(firestoreDb, 'products'), where('updatedAt', '>', lastPull))
-          const snapProd = await getDocs(qProd)
-          totalReads += snapProd.size
-          if (!snapProd.empty) {
+          // GANTI: dulu query(collection(firestoreDb, 'products'), where('updatedAt', '>', lastPull))
+          const { data: prodData, error } = await supabase.from('products').select('*').gt('updated_at', lastPull)
+          if (error) throw error
+          totalReads += prodData?.length || 0
+          if (prodData && prodData.length) {
             const changed = []
-            snapProd.forEach(d => {
-              const data = d.data()
+            prodData.forEach(d => {
               // handle soft delete
-              if (data.deleted) {
-                changed.push({ id: d.id, deleted: 1, updatedAt: data.updatedAt, synced: 1 })
+              if (d.deleted) {
+                changed.push({ id: d.id, deleted: 1, updated_at: d.updated_at, updatedAt: d.updated_at, synced: 1 })
               } else {
                 changed.push({
                   id: d.id,
-                  name: data.name || '',
-                  category: data.category || 'UMUM',
-                  unit: data.unit || 'PCS',
-                  price_sell: Number(data.price_sell) || 0,
-                  price_modal: Number(data.price_modal) || 0,
-                  packPrice: Number(data.packPrice) || 0,
-                  packQty: Number(data.packQty) || 0,
-                  purchasePackName: data.purchasePackName || '',
-                  qty: Number(data.qty) || 0,
-                  minStock: Number(data.minStock) || 2,
-                  isPublished: data.isPublished ? 1 : 0,
-                  imageUrl: data.imageUrl || null,
-                  imagePublicId: data.imagePublicId || null,
-                  updatedAt: data.updatedAt || new Date().toISOString(),
+                  name: d.name || '',
+                  category: d.category || 'UMUM',
+                  unit: d.unit || 'PCS',
+                  price_sell: Number(d.price_sell) || 0,
+                  price_modal: Number(d.price_modal) || 0,
+                  packPrice: Number(d.packPrice) || 0,
+                  packQty: Number(d.packQty) || 0,
+                  purchasePackName: d.purchasePackName || '',
+                  qty: Number(d.qty) || 0,
+                  minStock: Number(d.minStock) || 2,
+                  isPublished: d.isPublished || d.is_published ? 1 : 0,
+                  imageUrl: d.imageUrl || d.image_url || null,
+                  imagePublicId: d.imagePublicId || d.image_public_id || null,
+                  updatedAt: d.updated_at || d.updatedAt || new Date().toISOString(),
+                  updated_at: d.updated_at || d.updatedAt || new Date().toISOString(),
                   deleted: 0,
                   synced: 1
                 })
@@ -97,11 +99,11 @@ export const productService = {
 
         // Paket yang berubah
         try {
-          const qPkg = query(collection(firestoreDb, 'product_packages'), where('updatedAt', '>', lastPull))
-          const snapPkg = await getDocs(qPkg)
-          totalReads += snapPkg.size
-          if (!snapPkg.empty) {
-            const changedPkg = snapPkg.docs.map(d => ({ ...d.data(), id: d.id, synced: 1, deleted: d.data().deleted ? 1 : 0 }))
+          const { data: pkgData, error } = await supabase.from('product_packages').select('*').gt('updated_at', lastPull)
+          if (error) throw error
+          totalReads += pkgData?.length || 0
+          if (pkgData && pkgData.length) {
+            const changedPkg = pkgData.map(d => ({ ...d, id: d.id, synced: 1, deleted: d.deleted ? 1 : 0, updated_at: d.updated_at, updatedAt: d.updated_at }))
             // hapus yang deleted
             const toPut = changedPkg.filter(p => !p.deleted)
             const toDelete = changedPkg.filter(p => p.deleted)
@@ -111,7 +113,7 @@ export const productService = {
                 await db.product_packages.update(del.id, { deleted: true })
               }
             }
-            console.log(`[ProductService] Delta packages: ${snapPkg.size} reads`)
+            console.log(`[ProductService] Delta packages: ${pkgData.length} reads`)
           }
         } catch (e) {
           console.warn('[ProductService] Delta packages gagal', e)
@@ -119,26 +121,26 @@ export const productService = {
 
         // Jasa yang berubah
         try {
-          const qSvc = query(collection(firestoreDb, 'services'), where('updatedAt', '>', lastPull))
-          const snapSvc = await getDocs(qSvc)
-          totalReads += snapSvc.size
-          if (!snapSvc.empty) {
+          const { data: svcData, error } = await supabase.from('services').select('*').gt('updated_at', lastPull)
+          if (error) throw error
+          totalReads += svcData?.length || 0
+          if (svcData && svcData.length) {
             const changedSvc = []
-            snapSvc.forEach(d => {
-              const data = d.data()
-              if (data.deleted) {
-                changedSvc.push({ id: d.id, deleted: 1, updatedAt: data.updatedAt, synced: 1 })
+            svcData.forEach(d => {
+              if (d.deleted) {
+                changedSvc.push({ id: d.id, deleted: 1, updated_at: d.updated_at, updatedAt: d.updated_at, synced: 1 })
               } else {
-                const ids = getServiceIds(data)
+                const ids = getServiceIds(d)
                 changedSvc.push({
-                  ...data,
+                  ...d,
                   id: d.id,
-                  name: data.name || '',
-                  price: Number(data.price) || 0,
-                  productId: data.productId || null,
+                  name: d.name || '',
+                  price: Number(d.price) || 0,
+                  productId: d.productId || d.product_id || null,
                   productIds: ids,
-                  category: (data.category || 'UMUM').toUpperCase(),
-                  updatedAt: data.updatedAt || new Date().toISOString(),
+                  category: (d.category || 'UMUM').toUpperCase(),
+                  updatedAt: d.updated_at || d.updatedAt || new Date().toISOString(),
+                  updated_at: d.updated_at || d.updatedAt || new Date().toISOString(),
                   synced: 1,
                   deleted: 0
                 })
@@ -165,38 +167,40 @@ export const productService = {
       // 4. FULL SYNC - CUMA PERTAMA KALI AJA (351 reads sekali seumur hidup)
       console.log('[ProductService] First time, sync full 351 reads...')
 
-      const q = query(collection(firestoreDb, 'products'), where('isPublished', '==', true))
-      const snapshot = await getDocs(q)
+      // GANTI: dulu query(collection(firestoreDb, 'products'), where('isPublished', '==', true))
+      const { data: snapshot, error } = await supabase.from('products').select('*').or('isPublished.eq.true,is_published.eq.true')
       const remoteProducts = []
-      snapshot.forEach(doc => {
-        const data = doc.data()
-        if (data.deleted) return
-        remoteProducts.push({
-          id: doc.id,
-          name: data.name || '',
-          category: data.category || 'UMUM',
-          unit: data.unit || 'PCS',
-          price_sell: Number(data.price_sell) || 0,
-          price_modal: Number(data.price_modal) || 0,
-          packPrice: Number(data.packPrice) || 0,
-          packQty: Number(data.packQty) || 0,
-          purchasePackName: data.purchasePackName || '',
-          qty: Number(data.qty) || 0,
-          minStock: Number(data.minStock) || 2,
-          isPublished: data.isPublished ? 1 : 0,
-          imageUrl: data.imageUrl || null,
-          imagePublicId: data.imagePublicId || null,
-          updatedAt: data.updatedAt || new Date().toISOString(),
-          deleted: 0,
-          synced: 1
+      if (!error && snapshot) {
+        snapshot.forEach(d => {
+          if (d.deleted) return
+          remoteProducts.push({
+            id: d.id,
+            name: d.name || '',
+            category: d.category || 'UMUM',
+            unit: d.unit || 'PCS',
+            price_sell: Number(d.price_sell) || 0,
+            price_modal: Number(d.price_modal) || 0,
+            packPrice: Number(d.packPrice) || 0,
+            packQty: Number(d.packQty) || 0,
+            purchasePackName: d.purchasePackName || '',
+            qty: Number(d.qty) || 0,
+            minStock: Number(d.minStock) || 2,
+            isPublished: d.isPublished || d.is_published ? 1 : 0,
+            imageUrl: d.imageUrl || d.image_url || null,
+            imagePublicId: d.imagePublicId || d.image_public_id || null,
+            updatedAt: d.updated_at || d.updatedAt || new Date().toISOString(),
+            updated_at: d.updated_at || d.updatedAt || new Date().toISOString(),
+            deleted: 0,
+            synced: 1
+          })
         })
-      })
+      }
       if (remoteProducts.length > 0) await productRepo.bulkSave(remoteProducts)
 
       try {
-        const pkgSnap = await getDocs(collection(firestoreDb, 'product_packages'))
-        const remotePkgs = pkgSnap.docs
-          .map(d => ({ ...d.data(), id: d.id, synced: 1, deleted: d.data().deleted ? 1 : 0 }))
+        const { data: pkgSnap } = await supabase.from('product_packages').select('*')
+        const remotePkgs = (pkgSnap || [])
+          .map(d => ({ ...d, id: d.id, synced: 1, deleted: d.deleted ? 1 : 0, updated_at: d.updated_at, updatedAt: d.updated_at }))
           .filter(p => !p.deleted)
         if (remotePkgs.length) await db.product_packages.bulkPut(remotePkgs)
       } catch (e) {
@@ -204,21 +208,21 @@ export const productService = {
       }
 
       try {
-        const svcSnap = await getDocs(collection(firestoreDb, 'services'))
-        const remoteSvcs = svcSnap.docs
+        const { data: svcSnap } = await supabase.from('services').select('*')
+        const remoteSvcs = (svcSnap || [])
           .map(d => {
-            const data = d.data()
-            if (data.deleted) return null
-            const ids = getServiceIds(data)
+            if (d.deleted) return null
+            const ids = getServiceIds(d)
             return {
-              ...data,
+              ...d,
               id: d.id,
-              name: data.name || '',
-              price: Number(data.price) || 0,
-              productId: data.productId || null,
+              name: d.name || '',
+              price: Number(d.price) || 0,
+              productId: d.productId || d.product_id || null,
               productIds: ids,
-              category: (data.category || 'UMUM').toUpperCase(),
-              updatedAt: data.updatedAt || new Date().toISOString(),
+              category: (d.category || 'UMUM').toUpperCase(),
+              updatedAt: d.updated_at || d.updatedAt || new Date().toISOString(),
+              updated_at: d.updated_at || d.updatedAt || new Date().toISOString(),
               synced: 1,
               deleted: 0
             }

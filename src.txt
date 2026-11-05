@@ -283,37 +283,26 @@ export function useCartAnimation() {
   }
 }
 
-===== src/services/firebase.js =====
-// src/services/firebase.js
-import { initializeApp, getApps, getApp } from 'firebase/app'
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'
-// Konfigurasi Firebase dari Environment Variables Vite
-const firebaseConfig = {
-apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'sinarpagi-db.firebaseapp.com',
-projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'sinarpagi-db',
-storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-appId: import.meta.env.VITE_FIREBASE_APP_ID
-}
-// Singleton initialization untuk menghindari multiple app instances
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig)
-// Mencegah AbortError long-polling dengan memaksa WebSockets native
-const db = initializeFirestore(app, {
-experimentalForceLongPolling: false,
-experimentalAutoDetectLongPolling: false,
-localCache: persistentLocalCache({
-tabManager: persistentMultipleTabManager()
-})
-})
-export { app, db }
+===== src/services/supabase.js =====
+// src/services/supabase.js - pengganti firebase.js
+import { createClient } from '@supabase/supabase-js'
 
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+
+if (!supabaseUrl || !supabaseKey) {
+  console.warn('[Supabase] URL atau ANON_KEY belum di set di .env')
+}
+
+export const supabase = createClient(supabaseUrl, supabaseKey)
 ===== src/services/productService.js =====
-// src/services/productService.js - SUPER EKSTRIM DELTA 1 BARANG = 1 READ
-import { collection, getDocs, query, where, doc, getDoc } from 'firebase/firestore'
-import { db as firestoreDb } from './firebase.js'
+// src/services/productService.js - SUPER EKSTRIM DELTA 1 BARANG = 1 ROW (VERSI SUPABASE)
+// MAPPING 1:1 dari Firebase asli lo, cuma ganti firestoreDb -> supabase
+// Logic: VERSION_KEY, LAST_PULL_KEY, CACHE HIT, DELTA, FULL SYNC tetep sama
+
 import { productRepo } from '../db/repositories/productRepository.js'
 import { db } from '../db/index.js'
+import { supabase } from './supabase.js'
 
 const getServiceIds = (s) => {
   if (s.productIds && Array.isArray(s.productIds) && s.productIds.length) return s.productIds
@@ -331,20 +320,19 @@ export const productService = {
         return await productRepo.getPublished()
       }
 
-      // 1. CEK VERSI DULU - CUMA 1 READ
+      // 1. CEK VERSI DULU - CUMA 1 ROW (dulu 1 READ)
       let remoteVersion = null
       try {
-        const metaRef = doc(firestoreDb, 'meta', 'catalog')
-        const metaSnap = await getDoc(metaRef)
-        if (metaSnap.exists()) {
-          const metaData = metaSnap.data()
-          remoteVersion = metaData.version || metaData.updatedAt || null
+        // GANTI: dulu doc(firestoreDb, 'meta', 'catalog') -> sekarang ambil max updated_at dari products
+        const { data, error } = await supabase.from('products').select('updated_at').order('updated_at', { ascending: false }).limit(1)
+        if (!error && data && data.length) {
+          remoteVersion = data[0].updated_at
         }
       } catch (e) {
         console.warn('[ProductService] Gagal cek meta version', e)
       }
 
-      // 2. KALO VERSI SAMA - 0 READS TAMBAHAN
+      // 2. KALO VERSI SAMA - 0 ROWS TAMBAHAN
       if (remoteVersion) {
         try {
           const localVersion = localStorage.getItem(VERSION_KEY)
@@ -360,40 +348,41 @@ export const productService = {
 
       const lastPull = localStorage.getItem(LAST_PULL_KEY)
 
-      // 3. DELTA SYNC - CUMA YANG BERUBAH DOANG (1 BARANG = 1 READ)
+      // 3. DELTA SYNC - CUMA YANG BERUBAH DOANG (1 BARANG = 1 ROW)
       if (lastPull && remoteVersion) {
         console.log(`[ProductService] DELTA SYNC since ${lastPull}...`)
         let totalReads = 0
 
         // Produk yang berubah
         try {
-          const qProd = query(collection(firestoreDb, 'products'), where('updatedAt', '>', lastPull))
-          const snapProd = await getDocs(qProd)
-          totalReads += snapProd.size
-          if (!snapProd.empty) {
+          // GANTI: dulu query(collection(firestoreDb, 'products'), where('updatedAt', '>', lastPull))
+          const { data: prodData, error } = await supabase.from('products').select('*').gt('updated_at', lastPull)
+          if (error) throw error
+          totalReads += prodData?.length || 0
+          if (prodData && prodData.length) {
             const changed = []
-            snapProd.forEach(d => {
-              const data = d.data()
+            prodData.forEach(d => {
               // handle soft delete
-              if (data.deleted) {
-                changed.push({ id: d.id, deleted: 1, updatedAt: data.updatedAt, synced: 1 })
+              if (d.deleted) {
+                changed.push({ id: d.id, deleted: 1, updated_at: d.updated_at, updatedAt: d.updated_at, synced: 1 })
               } else {
                 changed.push({
                   id: d.id,
-                  name: data.name || '',
-                  category: data.category || 'UMUM',
-                  unit: data.unit || 'PCS',
-                  price_sell: Number(data.price_sell) || 0,
-                  price_modal: Number(data.price_modal) || 0,
-                  packPrice: Number(data.packPrice) || 0,
-                  packQty: Number(data.packQty) || 0,
-                  purchasePackName: data.purchasePackName || '',
-                  qty: Number(data.qty) || 0,
-                  minStock: Number(data.minStock) || 2,
-                  isPublished: data.isPublished ? 1 : 0,
-                  imageUrl: data.imageUrl || null,
-                  imagePublicId: data.imagePublicId || null,
-                  updatedAt: data.updatedAt || new Date().toISOString(),
+                  name: d.name || '',
+                  category: d.category || 'UMUM',
+                  unit: d.unit || 'PCS',
+                  price_sell: Number(d.price_sell) || 0,
+                  price_modal: Number(d.price_modal) || 0,
+                  packPrice: Number(d.packPrice) || 0,
+                  packQty: Number(d.packQty) || 0,
+                  purchasePackName: d.purchasePackName || '',
+                  qty: Number(d.qty) || 0,
+                  minStock: Number(d.minStock) || 2,
+                  isPublished: d.isPublished || d.is_published ? 1 : 0,
+                  imageUrl: d.imageUrl || d.image_url || null,
+                  imagePublicId: d.imagePublicId || d.image_public_id || null,
+                  updatedAt: d.updated_at || d.updatedAt || new Date().toISOString(),
+                  updated_at: d.updated_at || d.updatedAt || new Date().toISOString(),
                   deleted: 0,
                   synced: 1
                 })
@@ -408,11 +397,11 @@ export const productService = {
 
         // Paket yang berubah
         try {
-          const qPkg = query(collection(firestoreDb, 'product_packages'), where('updatedAt', '>', lastPull))
-          const snapPkg = await getDocs(qPkg)
-          totalReads += snapPkg.size
-          if (!snapPkg.empty) {
-            const changedPkg = snapPkg.docs.map(d => ({ ...d.data(), id: d.id, synced: 1, deleted: d.data().deleted ? 1 : 0 }))
+          const { data: pkgData, error } = await supabase.from('product_packages').select('*').gt('updated_at', lastPull)
+          if (error) throw error
+          totalReads += pkgData?.length || 0
+          if (pkgData && pkgData.length) {
+            const changedPkg = pkgData.map(d => ({ ...d, id: d.id, synced: 1, deleted: d.deleted ? 1 : 0, updated_at: d.updated_at, updatedAt: d.updated_at }))
             // hapus yang deleted
             const toPut = changedPkg.filter(p => !p.deleted)
             const toDelete = changedPkg.filter(p => p.deleted)
@@ -422,7 +411,7 @@ export const productService = {
                 await db.product_packages.update(del.id, { deleted: true })
               }
             }
-            console.log(`[ProductService] Delta packages: ${snapPkg.size} reads`)
+            console.log(`[ProductService] Delta packages: ${pkgData.length} reads`)
           }
         } catch (e) {
           console.warn('[ProductService] Delta packages gagal', e)
@@ -430,26 +419,26 @@ export const productService = {
 
         // Jasa yang berubah
         try {
-          const qSvc = query(collection(firestoreDb, 'services'), where('updatedAt', '>', lastPull))
-          const snapSvc = await getDocs(qSvc)
-          totalReads += snapSvc.size
-          if (!snapSvc.empty) {
+          const { data: svcData, error } = await supabase.from('services').select('*').gt('updated_at', lastPull)
+          if (error) throw error
+          totalReads += svcData?.length || 0
+          if (svcData && svcData.length) {
             const changedSvc = []
-            snapSvc.forEach(d => {
-              const data = d.data()
-              if (data.deleted) {
-                changedSvc.push({ id: d.id, deleted: 1, updatedAt: data.updatedAt, synced: 1 })
+            svcData.forEach(d => {
+              if (d.deleted) {
+                changedSvc.push({ id: d.id, deleted: 1, updated_at: d.updated_at, updatedAt: d.updated_at, synced: 1 })
               } else {
-                const ids = getServiceIds(data)
+                const ids = getServiceIds(d)
                 changedSvc.push({
-                  ...data,
+                  ...d,
                   id: d.id,
-                  name: data.name || '',
-                  price: Number(data.price) || 0,
-                  productId: data.productId || null,
+                  name: d.name || '',
+                  price: Number(d.price) || 0,
+                  productId: d.productId || d.product_id || null,
                   productIds: ids,
-                  category: (data.category || 'UMUM').toUpperCase(),
-                  updatedAt: data.updatedAt || new Date().toISOString(),
+                  category: (d.category || 'UMUM').toUpperCase(),
+                  updatedAt: d.updated_at || d.updatedAt || new Date().toISOString(),
+                  updated_at: d.updated_at || d.updatedAt || new Date().toISOString(),
                   synced: 1,
                   deleted: 0
                 })
@@ -476,38 +465,40 @@ export const productService = {
       // 4. FULL SYNC - CUMA PERTAMA KALI AJA (351 reads sekali seumur hidup)
       console.log('[ProductService] First time, sync full 351 reads...')
 
-      const q = query(collection(firestoreDb, 'products'), where('isPublished', '==', true))
-      const snapshot = await getDocs(q)
+      // GANTI: dulu query(collection(firestoreDb, 'products'), where('isPublished', '==', true))
+      const { data: snapshot, error } = await supabase.from('products').select('*').or('isPublished.eq.true,is_published.eq.true')
       const remoteProducts = []
-      snapshot.forEach(doc => {
-        const data = doc.data()
-        if (data.deleted) return
-        remoteProducts.push({
-          id: doc.id,
-          name: data.name || '',
-          category: data.category || 'UMUM',
-          unit: data.unit || 'PCS',
-          price_sell: Number(data.price_sell) || 0,
-          price_modal: Number(data.price_modal) || 0,
-          packPrice: Number(data.packPrice) || 0,
-          packQty: Number(data.packQty) || 0,
-          purchasePackName: data.purchasePackName || '',
-          qty: Number(data.qty) || 0,
-          minStock: Number(data.minStock) || 2,
-          isPublished: data.isPublished ? 1 : 0,
-          imageUrl: data.imageUrl || null,
-          imagePublicId: data.imagePublicId || null,
-          updatedAt: data.updatedAt || new Date().toISOString(),
-          deleted: 0,
-          synced: 1
+      if (!error && snapshot) {
+        snapshot.forEach(d => {
+          if (d.deleted) return
+          remoteProducts.push({
+            id: d.id,
+            name: d.name || '',
+            category: d.category || 'UMUM',
+            unit: d.unit || 'PCS',
+            price_sell: Number(d.price_sell) || 0,
+            price_modal: Number(d.price_modal) || 0,
+            packPrice: Number(d.packPrice) || 0,
+            packQty: Number(d.packQty) || 0,
+            purchasePackName: d.purchasePackName || '',
+            qty: Number(d.qty) || 0,
+            minStock: Number(d.minStock) || 2,
+            isPublished: d.isPublished || d.is_published ? 1 : 0,
+            imageUrl: d.imageUrl || d.image_url || null,
+            imagePublicId: d.imagePublicId || d.image_public_id || null,
+            updatedAt: d.updated_at || d.updatedAt || new Date().toISOString(),
+            updated_at: d.updated_at || d.updatedAt || new Date().toISOString(),
+            deleted: 0,
+            synced: 1
+          })
         })
-      })
+      }
       if (remoteProducts.length > 0) await productRepo.bulkSave(remoteProducts)
 
       try {
-        const pkgSnap = await getDocs(collection(firestoreDb, 'product_packages'))
-        const remotePkgs = pkgSnap.docs
-          .map(d => ({ ...d.data(), id: d.id, synced: 1, deleted: d.data().deleted ? 1 : 0 }))
+        const { data: pkgSnap } = await supabase.from('product_packages').select('*')
+        const remotePkgs = (pkgSnap || [])
+          .map(d => ({ ...d, id: d.id, synced: 1, deleted: d.deleted ? 1 : 0, updated_at: d.updated_at, updatedAt: d.updated_at }))
           .filter(p => !p.deleted)
         if (remotePkgs.length) await db.product_packages.bulkPut(remotePkgs)
       } catch (e) {
@@ -515,21 +506,21 @@ export const productService = {
       }
 
       try {
-        const svcSnap = await getDocs(collection(firestoreDb, 'services'))
-        const remoteSvcs = svcSnap.docs
+        const { data: svcSnap } = await supabase.from('services').select('*')
+        const remoteSvcs = (svcSnap || [])
           .map(d => {
-            const data = d.data()
-            if (data.deleted) return null
-            const ids = getServiceIds(data)
+            if (d.deleted) return null
+            const ids = getServiceIds(d)
             return {
-              ...data,
+              ...d,
               id: d.id,
-              name: data.name || '',
-              price: Number(data.price) || 0,
-              productId: data.productId || null,
+              name: d.name || '',
+              price: Number(d.price) || 0,
+              productId: d.productId || d.product_id || null,
               productIds: ids,
-              category: (data.category || 'UMUM').toUpperCase(),
-              updatedAt: data.updatedAt || new Date().toISOString(),
+              category: (d.category || 'UMUM').toUpperCase(),
+              updatedAt: d.updated_at || d.updatedAt || new Date().toISOString(),
+              updated_at: d.updated_at || d.updatedAt || new Date().toISOString(),
               synced: 1,
               deleted: 0
             }
@@ -799,6 +790,26 @@ export function compressImage(file) {
   })
 }
 
+===== src/utils/slugify.js =====
+export function slugify(text) {
+  return text
+    .toString()
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+}
+
+export function makeProductSlug(product) {
+  return `${slugify(product.name)}-${product.id}`
+}
+
+export function parseProductIdFromSlug(slug) {
+  if (!slug) return null
+  const parts = slug.split('-')
+  return parts[parts.length - 1]
+}
 ===== src/utils/productHelper.js =====
 // src/utils/productHelper.js - FIX JASA KHUSUS GA BOCOR KE UMUM + NAMA ROKOK CLEAN
 
@@ -887,21 +898,39 @@ import Catalog from '../views/Catalog.vue'
 import Cart from '../views/Cart.vue'
 import Checkout from '../views/Checkout.vue'
 import CheckoutSuccess from '../views/CheckoutSuccess.vue'
+import ProductDetail from '../views/ProductDetail.vue'
 
 const routes = [
   { path: '/', name: 'Catalog', component: Catalog },
-  { path: '/cart', name: 'Cart', component: Cart },
-  { path: '/checkout', name: 'Checkout', component: Checkout },
-  { path: '/checkout-success', name: 'CheckoutSuccess', component: CheckoutSuccess }
+  { path: '/produk/:slug', name: 'ProductDetail', component: ProductDetail },
+  { path: '/cart', name: 'Cart', component: Cart, meta: { noindex: true } },
+  { path: '/checkout', name: 'Checkout', component: Checkout, meta: { noindex: true } },
+  { path: '/checkout-success', name: 'CheckoutSuccess', component: CheckoutSuccess, meta: { noindex: true } }
 ]
 
 const router = createRouter({
   history: createWebHistory(),
-  routes
+  routes,
+  scrollBehavior() { return { top: 0 } }
+})
+
+router.afterEach((to) => {
+  if (to.meta.noindex) {
+    const el = document.querySelector('meta[name="robots"]')
+    if (el) el.setAttribute('content', 'noindex, nofollow')
+    else {
+      const meta = document.createElement('meta')
+      meta.name = 'robots'
+      meta.content = 'noindex, nofollow'
+      document.head.appendChild(meta)
+    }
+  } else {
+    const el = document.querySelector('meta[name="robots"]')
+    if (el) el.remove()
+  }
 })
 
 export default router
-
 ===== src/style.css =====
 @import "tailwindcss";
 ===== src/db/repositories/productRepository.js =====
@@ -1408,9 +1437,21 @@ import { formatRupiah } from '../utils/formatters'
 import { buildCartItem } from '../utils/productHelper'
 import { Search, Package, Plus, AlertTriangle, ShoppingCart, ArrowRight, X, Check } from 'lucide-vue-next'
 import { useCartAnimation } from '../composables/useCartAnimation'
+import { makeProductSlug } from '../utils/slugify'
+import { useHead } from '@vueuse/head'
 
 const productStore = useProductStore()
 const cartStore = useCartStore()
+
+// SEO HEAD TAHAP 4 - 0% NYENTUH FIREBASE
+useHead({
+  title: 'Warung Sinar Pagi Ciheleut Bogor - Warkop & Sembako Diantar 2rb',
+  meta: [
+    { name: 'description', content: 'Warkop & toko sembako di Jl. Jagung Ujung No.38 RT01/09 Ciheleut, Bogor Timur dekat Universitas Pakuan & Komplek IPB. Sedia Indomie rebus/goreng, gorengan, es cekek, pop ice, kopi, gas galon. Buka 09.00-21.00, diantar 200m cuma Rp2.000 COD/QRIS.' },
+    { property: 'og:title', content: 'Warung Sinar Pagi Ciheleut Bogor - Warkop & Sembako Diantar 2rb' },
+    { property: 'og:description', content: 'Pesan Indomie, kopi, snack & sembako dari Warung Sinar Pagi Ciheleut. Bisa makan di tempat atau diantar 200m cuma 2rb.' }
+  ]
+})
 
 const showModal = ref(false)
 const activeProduct = ref(null)
@@ -1532,16 +1573,14 @@ window.clearPinnedCategories = () => {
     <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-gray-100 px-4 md:px-6 lg:px-8 py-3.5 shadow-xs">
       <div class="max-w-7xl mx-auto flex flex-col gap-3">
         
-        <!-- BARIS ATAS: LOGO/BRAND + SEARCH + TOMBOL KERANJANG DESKTOP -->
+        <!-- BARIS ATAS: LOGO HORIZONTAL + SEARCH + TOMBOL KERANJANG DESKTOP -->
         <div class="flex items-center justify-between gap-3 md:gap-6">
           <div class="flex items-center gap-3 shrink-0">
-            <div class="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black text-sm shadow-xs">
-              SP
-            </div>
-            <div>
-              <h1 class="text-lg md:text-xl font-bold text-gray-900 tracking-tight leading-none">Warung Sinar Pagi</h1>
-              <p class="text-[11px] font-bold text-gray-400 mt-0.5">Katalog & Order Online</p>
-            </div>
+            <img 
+              src="/sinar-pagi-horizontal-color.svg" 
+              alt="Warung Sinar Pagi" 
+              class="h-8 md:h-10 w-auto object-contain"
+            />
           </div>
 
           <!-- SEARCH BAR DI KANAN LOGO SAAT TABLET/DESKTOP -->
@@ -1588,8 +1627,17 @@ window.clearPinnedCategories = () => {
       </div>
     </header>
 
+    <!-- COMPACT STRIP SEO - TAHAP 4 VERSI HEMAT TEMPAT -->
+    <section class="max-w-7xl mx-auto px-4 md:px-6 lg:px-8 pt-3 pb-1">
+      <div class="flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
+        <h1 class="font-black text-gray-900 text-xs md:text-sm tracking-tight leading-tight">Warung Sinar Pagi Ciheleut Bogor - Warkop & Sembako Diantar 2rb</h1>
+        <span class="hidden md:inline-flex items-center gap-2">• Jl. Jagung Ujung No.38 RT01/09 • Buka 09.00-21.00 • Antar 200m Rp2rb • COD/QRIS</span>
+        <a href="#produk" class="md:hidden ml-auto text-[11px] font-bold text-blue-600 hover:text-blue-700">Lihat Produk ↓</a>
+      </div>
+    </section>
+
     <!-- MAIN KONTEN: GRID RESPONSIF 2 HP, 3 TABLET, 4-6 DESKTOP -->
-    <main class="max-w-7xl mx-auto p-4 md:p-6">
+    <main id="produk" class="max-w-7xl mx-auto p-4 md:p-6">
       <div v-if="productStore.loading" class="flex justify-center items-center py-20"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div></div>
       <div v-else-if="productStore.filteredProducts.length === 0" class="text-center py-20 bg-white rounded-3xl border border-gray-100 shadow-xs"><Package :size="48" class="mx-auto text-gray-300 mb-2" /><p class="text-gray-500 font-medium">Produk tidak ditemukan</p></div>
       <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4 md:gap-5">
@@ -1608,7 +1656,12 @@ window.clearPinnedCategories = () => {
                 </div>
               </transition>
             </div>
-            <h2 class="font-semibold text-gray-800 text-xs sm:text-sm line-clamp-2 mb-1 group-hover:text-blue-600 transition">{{ product.name }}</h2>
+            <!-- TAHAP 6: NAMA JADI LINK KE DETAIL PRODUK (TETAP H3 UNTUK SEO) -->
+            <h3 class="font-semibold text-gray-800 text-xs sm:text-sm line-clamp-2 mb-1 group-hover:text-blue-600 transition">
+              <router-link :to="`/produk/${makeProductSlug(product)}`" @click.stop class="hover:underline block">
+                {{ product.name }}
+              </router-link>
+            </h3>
             <p class="text-blue-600 font-bold text-sm sm:text-base">{{ formatRupiah(product.price_sell) }}</p>
           </div>
           <div class="mt-3 pt-2 border-t border-gray-50 flex items-center justify-between">
@@ -1653,6 +1706,7 @@ window.clearPinnedCategories = () => {
         </div>
         <div class="bg-zinc-900 text-white p-4 rounded-2xl flex justify-between items-center mb-4"><span class="text-xs font-bold">Total</span><span class="text-lg font-black">{{ formatRupiah(totalPrice) }}</span></div>
         <button @click="addToCartWithOptions" class="w-full bg-zinc-900 hover:bg-zinc-800 text-white py-4 rounded-2xl font-black text-sm active:scale-95 transition shadow-lg cursor-pointer">Masukkan ke Keranjang</button>
+        <router-link :to="`/produk/${makeProductSlug(activeProduct)}`" class="w-full mt-3 block text-center text-xs font-bold text-blue-600 hover:text-blue-700 py-2">Lihat Halaman Detail →</router-link>
       </div>
     </div>
 
@@ -1807,20 +1861,247 @@ onMounted(async () => {
   </div>
 </template>
 
+===== src/views/ProductDetail.vue =====
+<script setup>
+import { ref, onMounted, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useProductStore } from '../stores/productStore'
+import { useCartStore } from '../stores/cartStore'
+import { getThumbUrl } from '../services/cloudinaryService'
+import { formatRupiah } from '../utils/formatters'
+import { buildCartItem } from '../utils/productHelper'
+import { parseProductIdFromSlug, makeProductSlug } from '../utils/slugify'
+import { useHead } from '@vueuse/head'
+import { ArrowLeft, Package, ShoppingCart } from 'lucide-vue-next'
+
+const route = useRoute()
+const router = useRouter()
+const productStore = useProductStore()
+const cartStore = useCartStore()
+
+const product = ref(null)
+const loading = ref(true)
+const notFound = ref(false)
+
+const productPackages = ref([])
+const availableServices = ref([])
+const selectedPackage = ref(null)
+const selectedServices = ref([])
+
+const totalPrice = computed(() => {
+  if (!product.value) return 0
+  let price = product.value.price_sell
+  if (selectedPackage.value) price = selectedPackage.value.price_sell
+  for (const svc of selectedServices.value) price += Number(svc.price) || 0
+  return price
+})
+
+function toggleService(svc) {
+  const exists = selectedServices.value.find(s => s.id === svc.id)
+  if (exists) selectedServices.value = []
+  else selectedServices.value = [svc]
+}
+
+onMounted(async () => {
+  loading.value = true
+  await productStore.loadProducts()
+  
+  const slugParam = route.params.slug || ''
+  
+  // TAHAP 6 FIX: CARI DENGAN 3 CARA BIAR GAK ADA YANG "TIDAK DITEMUKAN" LAGI
+  let found = null
+  
+  // Cara 1: Cocok persis slug lengkap
+  found = productStore.products.find(p => makeProductSlug(p) === slugParam)
+  
+  // Cara 2: Cari yang ID nya jadi akhiran slug (PALING AMAN, anti kepotong -)
+  if (!found) {
+    found = productStore.products.find(p => slugParam.endsWith(p.id))
+  }
+  
+  // Cara 3: Fallback cara lama
+  if (!found) {
+    const id = parseProductIdFromSlug(slugParam)
+    found = productStore.products.find(p => p.id === id)
+  }
+  
+  if (!found) {
+    notFound.value = true
+    loading.value = false
+    return
+  }
+  
+  product.value = found
+
+  // ambil paket & layanan dari IndexedDB (0 read)
+  try {
+    const pkgs = await productStore.fetchProductPackages(found.id)
+    productPackages.value = pkgs.filter(p => {
+      const name = (p.name || '').toUpperCase()
+      return !['RENCENG','RENCENGAN','DUS','KARDUS'].some(bad => name.includes(bad)) && (p.qty_pcs || 0) !== 1
+    }).sort((a,b) => (a.order ?? 999) - (b.order ?? 999))
+  } catch {}
+  try {
+    const allServices = await productStore.fetchAllServices()
+    const getIds = (s) => s.productIds?.length ? s.productIds : s.productId ? [s.productId] : []
+    const custom = allServices.filter(s => getIds(s).includes(found.id))
+    if (custom.length) availableServices.value = custom
+    else {
+      const cat = (found.category || '').toUpperCase()
+      availableServices.value = allServices.filter(s => getIds(s).length === 0 && (s.category || '').toUpperCase() === cat)
+    }
+  } catch {}
+
+  // SEO DYNAMIC
+  const title = `${found.name} - Warung Sinar Pagi Ciheleut Bogor | Warkop & Sembako Diantar 2rb`
+  const desc = `Beli ${found.name} di Warung Sinar Pagi Jl. Jagung Ujung No.38 Ciheleut Bogor Timur. ${found.category || ''} - Stok ready, buka 09.00-21.00, diantar 200m cuma Rp2.000 COD/QRIS. Harga ${formatRupiah(found.price_sell)}`
+  const url = `https://warungsinarpagi.my.id/produk/${makeProductSlug(found)}`
+  const image = found.imageUrl ? getThumbUrl(found.imageUrl, 600) : ''
+
+  useHead({
+    title,
+    meta: [
+      { name: 'description', content: desc },
+      { property: 'og:title', content: title },
+      { property: 'og:description', content: desc },
+      { property: 'og:image', content: image },
+      { property: 'og:url', content: url },
+      { property: 'og:type', content: 'product' }
+    ],
+    script: [
+      {
+        type: 'application/ld+json',
+        innerHTML: JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "Product",
+          "name": found.name,
+          "image": found.imageUrl ? [found.imageUrl] : [],
+          "description": desc,
+          "sku": found.id,
+          "brand": { "@type": "Brand", "name": "Warung Sinar Pagi" },
+          "category": found.category,
+          "offers": {
+            "@type": "Offer",
+            "url": url,
+            "priceCurrency": "IDR",
+            "price": found.price_sell,
+            "priceValidUntil": new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0],
+            "availability": found.qty > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+            "seller": {
+              "@type": "Organization",
+              "name": "Warung Sinar Pagi",
+              "address": {
+                "@type": "PostalAddress",
+                "streetAddress": "Jl. Jagung Ujung No.38 RT01/09",
+                "addressLocality": "Ciheleut",
+                "addressRegion": "Bogor",
+                "postalCode": "16142"
+              }
+            }
+          }
+        })
+      },
+      {
+        type: 'application/ld+json',
+        innerHTML: JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "BreadcrumbList",
+          "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Beranda", "item": "https://warungsinarpagi.my.id/" },
+            { "@type": "ListItem", "position": 2, "name": found.category || "Produk", "item": `https://warungsinarpagi.my.id/#${found.category}` },
+            { "@type": "ListItem", "position": 3, "name": found.name }
+          ]
+        })
+      }
+    ]
+  })
+
+  loading.value = false
+})
+
+function addToCart() {
+  if (!product.value) return
+  const item = buildCartItem(product.value, selectedServices.value, totalPrice.value, selectedPackage.value)
+  cartStore.addToCart(item, 1)
+  router.push('/cart')
+}
+</script>
+
+<template>
+  <div class="min-h-screen bg-gray-50">
+    <div class="max-w-5xl mx-auto px-4 md:px-6 py-4">
+      <button @click="router.push('/')" class="flex items-center gap-2 text-sm font-bold text-gray-600 hover:text-gray-900 mb-4">
+        <ArrowLeft :size="18" /> Kembali ke Katalog
+      </button>
+
+      <div v-if="loading" class="py-20 flex justify-center"><div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div></div>
+      <div v-else-if="notFound" class="py-20 text-center bg-white rounded-3xl border">
+        <Package :size="48" class="mx-auto text-gray-300 mb-2" />
+        <p class="font-bold">Produk tidak ditemukan</p>
+        <p class="text-xs text-gray-500 mt-1">Coba clear cache / reload</p>
+        <router-link to="/" class="text-blue-600 text-sm font-bold mt-2 inline-block">Ke Katalog</router-link>
+      </div>
+
+      <div v-else-if="product" class="grid md:grid-cols-2 gap-6">
+        <div class="bg-white rounded-[2rem] p-4 border border-gray-100 shadow-sm">
+          <div class="aspect-square bg-gray-100 rounded-2xl overflow-hidden">
+            <img v-if="product.imageUrl" :src="getThumbUrl(product.imageUrl, 600)" :alt="product.name" class="w-full h-full object-cover" />
+            <div v-else class="w-full h-full flex items-center justify-center text-gray-400"><Package :size="64" /></div>
+          </div>
+        </div>
+        <div class="bg-white rounded-[2rem] p-6 border border-gray-100 shadow-sm">
+          <span class="text-[11px] font-bold bg-gray-900 text-white px-3 py-1 rounded-full">{{ product.category || 'UMUM' }}</span>
+          <h1 class="text-2xl md:text-3xl font-black text-gray-900 mt-3 leading-tight">{{ product.name }}</h1>
+          <p class="text-sm text-gray-500 mt-2">Stok: {{ product.qty }} {{ product.unit || 'PCS' }} • Di Warung Sinar Pagi Ciheleut - Jl. Jagung Ujung No.38, Buka 09.00-21.00, Antar 200m Rp2rb</p>
+          <p class="text-3xl font-black text-blue-600 mt-4">{{ formatRupiah(totalPrice) }}</p>
+
+          <div v-if="productPackages.length" class="mt-6 space-y-2">
+            <label class="text-[10px] font-bold uppercase text-zinc-400">Pilih Paket</label>
+            <button @click="selectedPackage = null" :class="['w-full p-3 rounded-2xl border flex justify-between', !selectedPackage ? 'border-blue-600 bg-blue-50' : 'border-zinc-200']">
+              <span class="text-xs font-bold">Eceran</span><span class="text-sm font-black text-blue-600">{{ formatRupiah(product.price_sell) }}</span>
+            </button>
+            <button v-for="pkg in productPackages" :key="pkg.id" @click="selectedPackage = pkg" :class="['w-full p-3 rounded-2xl border flex justify-between', selectedPackage?.id === pkg.id ? 'border-emerald-600 bg-emerald-50' : 'border-zinc-200']">
+              <span class="text-xs font-bold">{{ pkg.name }}</span><span class="text-sm font-black text-emerald-600">{{ formatRupiah(pkg.price_sell) }}</span>
+            </button>
+          </div>
+
+          <div v-if="availableServices.length" class="mt-6 space-y-2">
+            <label class="text-[10px] font-bold uppercase text-zinc-400">Opsi Penyajian ({{ product.category }})</label>
+            <button v-for="svc in availableServices" :key="svc.id" @click="toggleService(svc)" :class="['w-full p-3 rounded-2xl border text-left flex justify-between', selectedServices.find(s=>s.id===svc.id) ? 'border-amber-500 bg-amber-50' : 'border-zinc-200']">
+              <span class="text-xs font-bold">{{ svc.name }}</span><span class="text-xs font-black text-amber-600">+{{ formatRupiah(svc.price) }}</span>
+            </button>
+          </div>
+
+          <button @click="addToCart" class="w-full mt-8 bg-zinc-900 hover:bg-zinc-800 text-white py-4 rounded-2xl font-black text-sm flex items-center justify-center gap-2">
+            <ShoppingCart :size="18" /> Masukkan ke Keranjang
+          </button>
+
+          <div class="mt-4 p-3 bg-blue-50 rounded-xl border border-blue-100 text-[11px] text-blue-700 leading-relaxed">
+            <b>Warung Sinar Pagi</b> - Jl. Jagung Ujung No.38 RT01/09 Ciheleut, Bogor Timur dekat Unpak & Komplek IPB. Buka 09.00-21.00. Bisa makan di tempat, ambil gratis, atau diantar 200m cuma Rp2.000. Bayar COD/QRIS.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
 ===== src/main.js =====
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import { createHead } from '@vueuse/head'
 import App from './App.vue'
 import router from './router'
 import './style.css'
+import { inject } from '@vercel/analytics'
 
 const app = createApp(App)
+const head = createHead()
 
 app.use(createPinia())
 app.use(router)
-
+app.use(head)
 app.mount('#app')
 
+inject()
 ===== src/App.vue =====
 <script setup>
 // Root Component Warung Sinar Pagi Web
