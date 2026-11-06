@@ -1,7 +1,7 @@
 // src/services/waService.js - FIX SPASI BIAR RAPIH PAS LANGSUNG KIRIM WA + HARGA JASA GA DOUBLE
 export const waService = {
   sendOrderToWhatsApp(customer, items, total, paymentMethod, buktiUrl) {
-    const phone = import.meta.env.VITE_WA_NUMBER || '6281234567890'
+    const phone = import.meta.env.VITE_WA_NUMBER || '6289516477760'
     
     const isDelivery = customer.deliveryType === 'delivery'
     const ongkir = Number(customer.deliveryFee) || 0

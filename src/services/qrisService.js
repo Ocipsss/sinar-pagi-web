@@ -1,14 +1,12 @@
-import { doc, getDoc } from 'firebase/firestore'
-import { db as firestoreDb } from './firebase.js'
+import { supabase } from './supabase.js'
 
 const QRIS_CACHE_KEY = 'sinar_pagi_qris_cache'
 const QRIS_CACHE_TIME_KEY = 'sinar_pagi_qris_cache_time'
-const QRIS_CACHE_DURATION = 60 * 60 * 1000 // 1 jam - QRIS jarang ganti
+const QRIS_CACHE_DURATION = 60 * 60 * 1000 // 1 jam cache
 
 export const qrisService = {
   async fetchRemoteSettings() {
     if (!navigator.onLine) {
-      // offline - coba ambil cache
       try {
         const cached = localStorage.getItem(QRIS_CACHE_KEY)
         if (cached) return JSON.parse(cached)
@@ -16,41 +14,54 @@ export const qrisService = {
       return null
     }
 
-    // HEMAT KUOTA: cek cache dulu
+    // Hemat request API: Cek cache dulu
     try {
       const lastCache = Number(localStorage.getItem(QRIS_CACHE_TIME_KEY) || 0)
       const now = Date.now()
       if (lastCache && (now - lastCache < QRIS_CACHE_DURATION)) {
         const cached = localStorage.getItem(QRIS_CACHE_KEY)
         if (cached) {
-          console.log('[QrisService] Cache hit - pake lokal, hemat 1 read')
           return JSON.parse(cached)
         }
       }
     } catch {}
 
     try {
-      const docRef = doc(firestoreDb, 'settings', 'qris')
-      const docSnap = await getDoc(docRef)
-      if (docSnap.exists()) {
-        const data = docSnap.data()
+      // 1. Coba cari setting khusus id = 'qris'
+      let { data, error } = await supabase
+        .from('settings')
+        .select('*')
+        .eq('id', 'qris')
+        .maybeSingle()
+
+      // 2. Fallback jika tersimpan di id = 'default_settings'
+      if (!data) {
+        const fallbackRes = await supabase
+          .from('settings')
+          .select('*')
+          .limit(1)
+          .maybeSingle()
+        data = fallbackRes.data
+      }
+
+      if (data) {
         const result = {
-          id: 'qris',
-          qrisUrl: data.qrisUrl || '',
-          merchantName: data.merchantName || 'WARUNG SINAR PAGI',
+          id: data.id || 'qris',
+          qrisUrl: data.qris_url || data.qrisUrl || data.image_url || '',
+          merchantName: data.merchant_name || data.merchantName || 'WARUNG SINAR PAGI',
           nmid: data.nmid || '',
-          updatedAt: data.updatedAt || new Date().toISOString()
+          updatedAt: data.updated_at || new Date().toISOString()
         }
-        // simpan cache
+
         try {
           localStorage.setItem(QRIS_CACHE_KEY, JSON.stringify(result))
           localStorage.setItem(QRIS_CACHE_TIME_KEY, String(Date.now()))
         } catch {}
+
         return result
       }
     } catch (error) {
-      console.error('[QrisService] Error:', error)
-      // kalo error, fallback ke cache
+      console.error('[QrisService] Error fetch QRIS:', error)
       try {
         const cached = localStorage.getItem(QRIS_CACHE_KEY)
         if (cached) return JSON.parse(cached)
