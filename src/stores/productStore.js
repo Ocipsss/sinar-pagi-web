@@ -69,10 +69,22 @@ export const useProductStore = defineStore('product', () => {
     loading.value = true
     try {
       const data = await productService.syncPublishedProducts()
-      products.value = data || []
+      const rawProducts = data || []
+      
+      // Memastikan string nama kategori terpetakan dari relasi categories.name Supabase
+      products.value = rawProducts.map(p => ({
+        ...p,
+        category: p.category || p.categories?.name || 'UMUM'
+      }))
     } catch (err) {
       console.error('[ProductStore] Gagal memuat produk:', err)
-      products.value = await productRepo.getPublished()
+      const fallbackData = await productRepo.getPublished()
+      
+      // Fallback penanganan nama kategori jika ditarik dari repositori lokal
+      products.value = (fallbackData || []).map(p => ({
+        ...p,
+        category: p.category || p.categories?.name || 'UMUM'
+      }))
     } finally {
       loading.value = false
     }

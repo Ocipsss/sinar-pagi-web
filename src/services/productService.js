@@ -1,3 +1,4 @@
+// src/services/productService.js
 import { productRepo } from '../db/repositories/productRepository.js'
 import { db } from '../db/index.js'
 import { supabase } from './supabase.js'
@@ -56,11 +57,11 @@ export const productService = {
         console.log(`[ProductService] DELTA SYNC since ${lastPull}...`)
         let totalReads = 0
 
-        // Sync Delta Products
+        // Sync Delta Products (DENGAN RELASI CATEGORIES)
         try {
           const { data: prodData, error } = await supabase
             .from('products')
-            .select('*')
+            .select('*, categories(id, name)')
             .gt('updated_at', lastPull)
 
           if (error) throw error
@@ -70,7 +71,8 @@ export const productService = {
             const changed = prodData.map(d => ({
               id: d.id,
               name: d.name || '',
-              category: d.category || 'UMUM',
+              category_id: d.category_id || d.categoryId || null,
+              category: d.category || d.categories?.name || 'UMUM',
               unit: d.unit || 'PCS',
               price_sell: Number(d.price_sell || d.price || 0),
               price_modal: Number(d.price_modal || 0),
@@ -132,12 +134,12 @@ export const productService = {
         return await productRepo.getPublished()
       }
 
-      // 4. FULL SYNC PERTAMA KALI
+      // 4. FULL SYNC PERTAMA KALI (DENGAN RELASI CATEGORIES)
       console.log('[ProductService] Full Sync Produk dari Supabase...')
 
       const { data: snapshot, error } = await supabase
         .from('products')
-        .select('*')
+        .select('*, categories(id, name)')
         .eq('is_published', true)
 
       if (!error && snapshot) {
@@ -146,7 +148,8 @@ export const productService = {
           .map(d => ({
             id: d.id,
             name: d.name || '',
-            category: d.category || 'UMUM',
+            category_id: d.category_id || d.categoryId || null,
+            category: d.category || d.categories?.name || 'UMUM',
             unit: d.unit || 'PCS',
             price_sell: Number(d.price_sell || d.price || 0),
             price_modal: Number(d.price_modal || 0),
