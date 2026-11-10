@@ -11,24 +11,45 @@ import Maintenance from '../views/Maintenance.vue'
 // Priority:
 //   1. .env (VITE_MAINTENANCE_MODE=true) → production
 //   2. localStorage (maintenance_mode=true) → toggle instant
+//   3. URL query (?maintenance=1) → override cepat tanpa build
 // ============================================
 function isMaintenanceMode() {
   // Priority 1: Environment variable (production)
-  if (import.meta.env.VITE_MAINTENANCE_MODE === 'true') {
+  // Vite inline nilai ini saat BUILD TIME — wajib redeploy setelah ubah
+  const envFlag = import.meta.env.VITE_MAINTENANCE_MODE
+  if (envFlag === 'true' || envFlag === true) {
     return true
   }
 
-  // Priority 2: localStorage (dev/testing — toggle tanpa rebuild)
+  // Priority 2: URL query override (?maintenance=1)
+  try {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('maintenance') === '1') return true
+    }
+  } catch {}
+
+  // Priority 3: localStorage (dev/testing — toggle tanpa rebuild)
   try {
     if (localStorage.getItem('maintenance_mode') === 'true') {
       return true
     }
   } catch (e) {
-    // localStorage bisa throw di private mode / disabled cookies
     console.warn('[Router] localStorage unavailable:', e)
   }
 
   return false
+}
+
+// ============================================
+// DEBUG LOG — hapus kalau sudah production stabil
+// ============================================
+if (typeof window !== 'undefined') {
+  console.log('[Router] ENV VITE_MAINTENANCE_MODE =', import.meta.env.VITE_MAINTENANCE_MODE)
+  console.log('[Router] LS maintenance_mode =', (() => {
+    try { return localStorage.getItem('maintenance_mode') } catch { return '(unavailable)' }
+  })())
+  console.log('[Router] isMaintenanceMode() =', isMaintenanceMode())
 }
 
 const routes = [
